@@ -6,7 +6,6 @@ import torch.nn.functional as F
 import torch.nn.init as I
 import torchvision.models
 
-from neuralnets.mobilenet_v1 import MobileNet
 from neuralnets.modelcomponents import *
 
 
@@ -75,9 +74,47 @@ class LocalizerNet(nn.Module):
         return pred
 
 
-class MobilnetV1WithPointHead(nn.Module):
+class PretrainedNetwork(nn.Module):
+    def __init__(self, num_classes):
+        super(PretrainedNetwork, self).__init__()
+        net = torchvision.models.mnasnet1_0(pretrained=True)
+        self.backbone = nn.Sequential(
+            *[*net.children()][:-1][0])
+        def set_momentum(m):
+            if 'batchnorm' in m.__class__.__name__.lower():
+                m.momentum = 0.01
+        self.backbone.apply(set_momentum)
+        self.drop = nn.Dropout(0.5)
+        self.dense = nn.Linear(1280, num_classes)
+
+    def forward(self, x):
+        x = x.repeat(1,3,1,1) # Expand grayscale image to 3 channels
+        z = self.backbone(x)
+        z = torch.mean(z, dim=[2,3])
+        z = self.drop(z)
+        y = self.dense(z)
+        return y
+    
+    def train(self, mode: bool = True):
+        super(PretrainedNetwork, self).train(mode)
+        if mode:
+            def set_bn_eval(m):
+                classname = m.__class__.__name__
+                if 'batchnorm' in m.__class__.__name__.lower():
+                    #print (f"Layer {str(m)} set to eval mode!")
+                    m.eval()
+            # Heard the recommendation to keep the statistics of BN layers
+            # during fine tuning. Do this only for the lower layers which do
+            # basic feature recognition. The rationale is that higher level
+            # layers must be changed radically since we do a problem very
+            # different from image net classification which the network was
+            # pretrained on.
+            self.backbone[:9].apply(set_bn_eval)
+
+
+class NetworkWithPointHead(nn.Module):
     def __init__(self, enable_point_head=True, point_head_dimensions=3):
-        super(MobilnetV1WithPointHead, self).__init__()
+        super(NetworkWithPointHead, self).__init__()
         self.input_resolution = 129
         self.enable_point_head = enable_point_head
         self.num_eigvecs = 50
@@ -87,7 +124,8 @@ class MobilnetV1WithPointHead(nn.Module):
         self.point_head_dimensions = point_head_dimensions
         assert point_head_dimensions in (2,3)
         num_classes = 7+self.num_eigvecs+4
-        self.convnet = MobileNet(num_classes=num_classes, input_channel=1, momentum=0.01, skipconnection=True, dropout=0.5)
+        self.convnet = PretrainedNetwork(num_classes)
+        #self.convnet = original_mobilnet_backbone(num_classes)
         self.out = PoseOutputStage()
 
     def forward(self, x):

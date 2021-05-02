@@ -16,7 +16,7 @@ def timing_and_output(net, x):
 if __name__ == '__main__':
     torch.set_num_threads(1)
 
-    net = neuralnets.models.MobilnetV1WithPointHead()
+    net = neuralnets.models.NetworkWithPointHead()
     net.eval()
     timing_and_output(net, torch.rand(1, 1, net.input_resolution, net.input_resolution))
 

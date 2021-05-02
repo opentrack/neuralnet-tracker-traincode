@@ -28,7 +28,7 @@ class Modelwrapper(nn.Module):
 def load_posemodel(args):
     sd = torch.load(args.posemodelfilename)
     neuralnets.models.clear_denormals_inplace(sd)
-    net = neuralnets.models.MobilnetV1WithPointHead()
+    net = neuralnets.models.NetworkWithPointHead()
     net.load_state_dict(sd, strict=True)
     net.eval()
     net = Modelwrapper(net)
@@ -76,8 +76,10 @@ def convert_posemodel(args):
 
     # Outputs better be the same ...
     for a, b in zip(torch_out, outputs):
-        assert np.allclose(a.detach().numpy(), b)
-
+        a = a.detach().numpy()
+        if not np.allclose(a, b, 1.e-4):
+            print(f"Torch output: {a} differs from Onnx output {b}")
+        assert np.allclose(a, b, 1.e-4)
     del ort_session
 
 
