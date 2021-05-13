@@ -5,7 +5,7 @@ import torch
 import numpy as np
     
 
-if __name__ == '__main__':
+def test_quaternions():
         us = Rotation.from_rotvec(np.random.uniform(0.,1.,size=(7,3)))
         vs = Rotation.from_rotvec(np.random.uniform(0.,1.,size=(7,3)))
         q_test = (us * vs).as_quat()

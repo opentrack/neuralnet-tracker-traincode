@@ -12,6 +12,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import utils
+import neuralnets.modelcomponents
 
 # For debugging ...
 errordata = None
@@ -85,7 +86,7 @@ def run_the_training(
                 t, x, xerr = np.array(dd.train_curve).T
                 ax.errorbar(t, x, yerr=xerr, label=dd.metric.name, color='r')
             if dd.run_on_test:
-                ax.plot(*np.array(dd.test_curve).T, label='test', marker='x', color='b')
+                ax.plot(*np.array(dd.test_curve).T, label='test '+dd.metric.name, marker='x', color='b')
             if not hasattr(dd.metric,'plot_logscale') or dd.metric.plot_logscale == True:
                 ax.set(yscale='log')
             ax.grid(axis='y', which='both')
@@ -110,10 +111,11 @@ def run_the_training(
 
             losses = []
             for i, crit in enumerate(criterions):
+                crit.epoch = epoch
                 loss = crit(net, output_poses, data)
                 if not torch.isfinite(loss).all():
                     global errordata
-                    errordata = (crit.name, loss, output_poses, net.deformweights, data)
+                    errordata = (crit.name, loss, output_poses, net.kptweights, data)
                     assert False
                 epoch_losses[i].append((loss.detach().cpu().numpy()))
                 losses.append(loss[None])
@@ -236,6 +238,38 @@ class CoordPoseLoss(object):
             return torch.mean(loss)
 
 
+class ShapeParameterLoss(object):
+    name = 'shape'
+    def __call__(self, net, pred, sample):
+        target = sample['shapeparam'].type(torch.cuda.FloatTensor)
+        loss = torch.mean(F.mse_loss(net.kptweights, target, reduction='none'), dim=1)
+        enable_mask = sample['pose_enable'].type(torch.cuda.FloatTensor)
+        return masked_mean(loss, enable_mask)
+
+
+class AllParameterLoss(object):
+    name = 'all_params'
+    def __init__(self):
+        # Must match the shape data loaded in the model
+        keypts, keyeigvecs = neuralnets.modelcomponents.load_deformable_head_keypoints(40, 10, return_nn_parameters=False)
+        assert keypts.shape[1] == 3
+        assert keyeigvecs.shape[2] == 3
+        self.w_quat_coeff = torch.norm(torch.from_numpy(keypts)).type(torch.cuda.FloatTensor)
+        self.w_shape_coeff = torch.norm(torch.from_numpy(keyeigvecs),dim=[1,2]).type(torch.cuda.FloatTensor)
+        self.w_coord_coeff = torch.sqrt(torch.tensor(keypts.shape[0]/3.)).type(torch.cuda.FloatTensor)
+    def __call__(self, net, pred, sample):
+        targetquat = sample['pose'].type(torch.cuda.FloatTensor)
+        targetcoord = sample['coord'].type(torch.cuda.FloatTensor)
+        targetshape = sample['shapeparam'].type(torch.cuda.FloatTensor)
+        coord, quat = pred
+        q_loss = quaternion_distance(quat, targetquat)
+        s_loss = F.mse_loss(net.kptweights, targetshape, reduction='none')
+        c_loss = F.mse_loss(coord, targetcoord, reduction='none')
+        loss = 0.33*(q_loss + torch.mean(s_loss, dim=1) + torch.mean(c_loss, dim=1))
+        enable_mask = sample['pose_enable'].type(torch.cuda.FloatTensor)
+        return masked_mean(loss, enable_mask)
+
+
 class QuaternionNormalizationRegularization(object):
     name = 'quatnorm'    
     def __call__(self, net, pred, sample):
@@ -250,20 +284,36 @@ class Points3dLoss(object):
         pt3d_68 = sample['pt3d_68']
         pt3d_68 = pt3d_68.type(torch.cuda.FloatTensor)
         assert pt3d_68.shape == net.pt3d_68.shape, f"Mismatch {pt3d_68.shape} vs {net.pt3d_68.shape}"
-        assert pt3d_68.shape[1] == 3 #in (2,3)
+        assert pt3d_68.shape[1] == 3
         assert pt3d_68.shape[2] == 68
         l = F.mse_loss(net.pt3d_68, pt3d_68, reduction='none')
         l = torch.mean(l, dim=[1,2])
         enable_mask = sample['pt3d_68_enable'].type(torch.cuda.FloatTensor)
         return masked_mean(l, enable_mask)
 
-    
-class DeformationMagnitudeRegularization(object):
-    name = 'deform'
+
+class MixedParameterKeypointLoss():
+    """
+        Inspired by "Towards Fast, Accurate and Stable 3D Dense Face Alignment".
+        In Fig 7 it is shown that the test loss decreases faster when by the
+        end of the training the loss switches from a function of parameters
+        to vertex distance.
+        This class does it with a fixed schedule.
+    """
+    name = 'mixed_param_keypoint'
+    keypointloss = Points3dLoss()
+    paramloss = AllParameterLoss()
+    def __init__(self, max_epoch):
+        self.max_epoch = max_epoch
+        self.keypoint_weight_end = 0.9
+        self.keypoint_weight_start = 0.01
+        self.epoch = 0
     def __call__(self, net, pred, sample):
-        w = net.deformweights
-        l = torch.square(w)
-        return torch.mean(l)
+        l_kp = self.keypointloss(net, pred, sample)
+        l_param = self.paramloss(net, pred, sample)
+        w = max(0., min(self.epoch/self.max_epoch, 1.))  # Epoch to be set by user
+        w = self.keypoint_weight_end*w + (1.-w)*self.keypoint_weight_start
+        return w*l_kp + (1.-w)*l_param
 
 
 class BoxLoss(object):

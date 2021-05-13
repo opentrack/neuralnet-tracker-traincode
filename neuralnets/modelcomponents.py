@@ -14,7 +14,8 @@ import neuralnets.torchquaternion as torchquaternion
 __all__ = [ 
     'clear_denormals_inplace', 
     'PoseOutputStage', 'SpatialMeanAndStd',
-    'load_deformable_head_keypoints', 'depthwise_separable_convolution'
+    'load_deformable_head_keypoints', 'depthwise_separable_convolution',
+    'DeformableHeadKeypoints'
 ]
 
 
@@ -77,13 +78,9 @@ class PoseOutputStage(nn.Module):
         screen_pos[:,:,:2] += self.head_position[:,None,:]
         return screen_pos
 
-    def headcenter_to_screen(self, p):
-        screen_pos  = self.headcenter_to_screen_3d(p)
-        return screen_pos[...,:2]
-
     def forward(self, x):
         assert x.shape[1]==7
-        self.unnormalized = x[...,3:]
+        self.unnormalized = x[...,3:7]
         self.head_size = x[...,2:3]
         self.head_position = x[...,:2]
         self.head_possize = x[...,:3]
@@ -92,7 +89,30 @@ class PoseOutputStage(nn.Module):
         return (self.head_possize, self.head_quat)
 
 
+class DeformableHeadKeypoints(nn.Module):
+    def __init__(self):
+        super(DeformableHeadKeypoints, self).__init__()
+        # TODO: rename
+        self.num_eigvecs = 50
+        self.keypts, self.keyeigvecs = load_deformable_head_keypoints(40, 10)
+    
+    def deformvector(self, shapeparams):
+        local_keypts = self.keyeigvecs[None,...] * shapeparams[:,:,None,None]
+        local_keypts = torch.sum(local_keypts, dim=1)
+        return local_keypts
+
+    def forward(self, shapeparams):
+        local_keypts = self.deformvector(shapeparams)
+        local_keypts += self.keypts[None,...]
+        assert len(local_keypts.shape)==3 and local_keypts.shape[2]==3
+        # Return in format (batch x points x dimensions)
+        return local_keypts
+
+
 def load_deformable_head_keypoints(num_shape, num_expr, return_nn_parameters=True):
+    """
+        Returned array shapes:  (point num x dim) and (shape num x point num x dim)
+    """
     # Extra offset, matching the one from PoseOutputStage baked in!
     keypts = np.load(join(dirname(__file__),'face_keypoints_base_68_3d.npy'))
     shp = np.load(join(dirname(__file__),'face_keypoints_base_68_3d_shp.npy'))

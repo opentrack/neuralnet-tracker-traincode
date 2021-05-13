@@ -111,21 +111,18 @@ class PretrainedNetwork(nn.Module):
             # pretrained on.
             self.backbone[:9].apply(set_bn_eval)
 
-
 class NetworkWithPointHead(nn.Module):
     def __init__(self, enable_point_head=True, point_head_dimensions=3):
         super(NetworkWithPointHead, self).__init__()
         self.input_resolution = 129
         self.enable_point_head = enable_point_head
-        self.num_eigvecs = 50
+        self.deformablekeypoints = DeformableHeadKeypoints()
         # Load the keypoint data even if not used. That is to make
         # load_state_dict work with the strict=True option.
-        self.keypts, self.keyeigvecs = load_deformable_head_keypoints(40, 10)
         self.point_head_dimensions = point_head_dimensions
         assert point_head_dimensions in (2,3)
-        num_classes = 7+self.num_eigvecs+4
+        num_classes = 7+self.deformablekeypoints.num_eigvecs+4
         self.convnet = PretrainedNetwork(num_classes)
-        #self.convnet = original_mobilnet_backbone(num_classes)
         self.out = PoseOutputStage()
 
     def forward(self, x):
@@ -149,17 +146,16 @@ class NetworkWithPointHead(nn.Module):
         x = self.out(torch.cat([coords, quats], dim=1))
         
         if self.enable_point_head:
-            self.deformweights = kptweights
-            local_keypts = self.keyeigvecs[None,...] * kptweights[:,:,None,None]
-            local_keypts = torch.sum(local_keypts, dim=1)
-            local_keypts += self.keypts[None,...]
+            local_keypts = self.deformablekeypoints.forward(kptweights)
+            self.pt3d_68 = self.out.headcenter_to_screen_3d(local_keypts)
             if self.point_head_dimensions == 2:
-                self.pt3d_68 = self.out.headcenter_to_screen(local_keypts)
-            else:
-                self.pt3d_68 = self.out.headcenter_to_screen_3d(local_keypts)
+                self.pt3d_68 = self.pt3d_68[:,:,:2]
             self.pt3d_68 = self.pt3d_68.transpose(1,2)
+            self.kptweights = kptweights
             assert self.pt3d_68.shape[1] == self.point_head_dimensions and self.pt3d_68.shape[2] == 68
-            # Return in format (batch x dimensions x points)
+            # Stores keypoint in format (batch x dimensions x points)
+        
+        # TODO: Return a dict
         return x
 
     def inference(self, x):

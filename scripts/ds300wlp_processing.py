@@ -14,7 +14,8 @@ import progressbar
 
 from datasets.preprocessing import imdecode, rotation_conversion_from_hell,\
     compute_keypoints_from_3ddfa_shape_params, depth_centered_keypoints, \
-    move_aflw_head_center_to_between_eyes, extended_key_points_for_bounding_box
+    move_aflw_head_center_to_between_eyes, extended_key_points_for_bounding_box, \
+    get_3ddfa_shape_parameters
 
 
 def discover_samples(zf):
@@ -24,9 +25,6 @@ def discover_samples(zf):
         f.filename for f in zf.filelist if 
         (f.external_attr==0x20 and splitext(f.filename)[1]=='.mat' and isInDataSubsets(f.filename)) ]
     return filenames
-
-
-
 
 
 def read_sample(zf, matfile):
@@ -59,6 +57,8 @@ def read_sample(zf, matfile):
     x1, y1, _ = np.amax(extpts, axis=1)
     roi = np.array([x0, y0, x1, y1])
 
+    f_shp, f_exp = get_3ddfa_shape_parameters(data)
+
     return { 
         'pose' :  rot.as_quat(),
         'coord' : coord,
@@ -66,6 +66,7 @@ def read_sample(zf, matfile):
         'image' : np.frombuffer(jpgbuffer, dtype='B'),
         'file' : ('300wlp/'+splitext(basename(matfile))[0]).encode('ascii'),
         'pt3d_68' : pt3d,
+        'shapeparam' : np.concatenate([f_shp, f_exp])
     }
 
 
@@ -87,6 +88,7 @@ def generate_hdf5_dataset(source_file, outfilename, count=None):
             ds_pt3d_68 = f.create_dataset('pt3d_68', (N,3,68), chunks=(cs,3,68), maxshape=(N,3,68), dtype='f4')
             ds_file = f.create_dataset('files', (N,), chunks=(cs,), maxshape=(N,), dtype='S40')
             ds_roi = f.create_dataset('rois', (N,4), chunks=(cs,4), maxshape=(N,4), dtype='f4')
+            ds_shapeparams = f.create_dataset('shapeparams', (N,50), chunks=(cs,50), maxshape=(N,50), dtype='f4')
             i = 0
             with progressbar.ProgressBar() as bar:
                 for fn in bar(filenames):
@@ -97,6 +99,7 @@ def generate_hdf5_dataset(source_file, outfilename, count=None):
                     ds_pt3d_68[i] = sample['pt3d_68']
                     ds_file[i] = sample['file']
                     ds_roi[i] = sample['roi']
+                    ds_shapeparams[i] = sample['shapeparam']
                     i += 1
 
 

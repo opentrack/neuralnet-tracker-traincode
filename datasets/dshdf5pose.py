@@ -61,6 +61,8 @@ class Hdf5PoseDataset(IterableDataset):
             })
         if 'hasface' in data:
             sample['hasface'] = bool(data['hasface'][idx])
+        if 'shapeparams' in data:
+            sample['shapeparam'] = np.array(data['shapeparams'][idx])
         return sample
     
     def _generate_sample(self, hf, idx):

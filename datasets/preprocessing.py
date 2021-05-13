@@ -273,18 +273,22 @@ def _load_shape_components():
     return keypts, w_shp, w_exp
 
 
+def get_3ddfa_shape_parameters(params):
+    """ Modified for a subset of rescaled shape vectors. 
+        Also restricted to the first 40 and 10 parameters, respectively."""
+    f_shp = params['Shape_Para'][:40,0]/20./1.e5
+    f_exp = params['Exp_Para'][:10,0]/5.
+    return f_shp, f_exp
+
+
 def compute_keypoints_from_3ddfa_shape_params(params, head_size, rotation, tx, ty):
-    #offset_my_mangled_shape_data = np.array([[-0.9, -0.26, 0.]])
-    f_shp = params['Shape_Para'][:,0]/20./1.e5
-    f_exp = params['Exp_Para'][:,0]/5.
+    f_shp, f_exp = get_3ddfa_shape_parameters(params)
     keypts, w_shp, w_exp = _load_shape_components()
     pts3d = keypts + \
         np.sum(f_shp[:40,None,None]*w_shp, axis=0) + \
         np.sum(f_exp[:10,None,None]*w_exp, axis=0)
-    #pts3d -= offset_my_mangled_shape_data
     pts3d *= head_size     
     pts3d = rotation.apply(pts3d)
-    # world to screen transform:
     pts3d = pts3d[:,[2,1,0]]
     pts3d = pts3d.T
     pts3d[0] *= -1

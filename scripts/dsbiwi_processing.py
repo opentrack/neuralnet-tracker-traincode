@@ -19,8 +19,7 @@ from datasets.preprocessing import PinholeCam, imdecode, imencode
 
 PROJ_FOV = 65.
 HEAD_SIZE_MM = 100.
-border_size_frac = 0.1
-roi_out_of_bound_tol = 0
+
 
 dt = h5py.special_dtype(vlen=np.dtype('uint8'))
 

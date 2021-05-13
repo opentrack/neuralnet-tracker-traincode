@@ -13,7 +13,7 @@ def timing_and_output(net, x):
         print (f"Inference time: {time/N*1000:.0f} ms averaged over {N} runs")
 
 
-if __name__ == '__main__':
+def test_neuralnetwork_model_sanity():
     torch.set_num_threads(1)
 
     net = neuralnets.models.NetworkWithPointHead()

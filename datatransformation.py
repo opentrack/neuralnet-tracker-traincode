@@ -496,6 +496,7 @@ class InjectZeroPose(object):
             'pose' : Rotation.identity(),
             'coord' : np.array([0.,0.,0.,], dtype=np.float32),
             'pose_enable' : np.array(0.,dtype=np.float32),
+            'shapeparam' : np.zeros(50, dtype=np.float32)
         })
         return sample
 
