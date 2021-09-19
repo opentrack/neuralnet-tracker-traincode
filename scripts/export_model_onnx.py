@@ -28,7 +28,7 @@ class Modelwrapper(nn.Module):
 def load_posemodel(args):
     sd = torch.load(args.posemodelfilename)
     neuralnets.models.clear_denormals_inplace(sd)
-    net = neuralnets.models.MobilnetV1WithPointHead()
+    net = neuralnets.models.ResNet50WithPointHead()
     net.load_state_dict(sd, strict=True)
     net.eval()
     net = Modelwrapper(net)
