@@ -77,6 +77,27 @@ Python, PyTorch, Jupyter, OpenCV, SciPy, H5py, Progressbar2, ONNX
 Miscellaneous
 =============
 
+Comparison with literature references
+-------------------------------------
+
+It is common in the head-pose estimation literature to compare yaw, pitch and roll errors  - more precisely the mean absolute error (MAE), which is simply the average of `|xhat - x|` taken over the test set, where `xhat` is the angle prediction and `x` the ground truth value respectively.
+
+There are two recent works which can be taken for reference:
+[1] Albiero et al. (2021) "img2pose: Face Alignment and Detection via 6DoF, Face Pose Estimation"
+[2] Hsu et al. (2018) "Quatnet: Quaternion-based head pose estimation with multiregression loss"
+
+With results for the popular AFLW 2000 3D benchmark:
+
+| Method            | Yaw   | Pitch | Roll  | Average |
+|-------------------|-------|-------|-------|---------|
+| QuatNet           | 3.973 | 5.615 | 3.920 | 4.503   |
+| img2pose          | 3.426 | **5.034** | **3.278** | **3.913** |
+| **NN-Tracker (this work)** | **3.386** | 5.224 | 3.561 | 4.057 |
+
+The values for QuatNet and img2pose are taken from [1]. The values for NN-Tracker were generated with the training code for first release with [opentrack 2021.1.2](https://github.com/opentrack/opentrack/releases/tag/opentrack-2021.1.2). For the comparison, I retrained a network, not training on AFLW 2000 3D since I was using it as test set. See [notebook in feature branch](https://github.com/opentrack/neuralnet-tracker-traincode/blob/proper-measurement/scripts/TrainKeypoints.ipynb).
+
+The authors of 3DDFA_V2 did not publish angle errors. A comparison of landmark position errors is still to be done ...
+
 Head coordinate frame
 ---------------------
 X is forward from the viewpoint of the faces. Y is up. Z is right. Granted, my choice is a bit awkward ... but tbh I'm happy I got it working at all.
@@ -118,11 +139,11 @@ Deformable Face Model
 
 The modified BFM2009 face model in datasets/bfm_noneck_v3.pkl is only for academic use. For commercial use, you need to apply for the commercial license, some refs are below:
 
-[1] https://faces.dmi.unibas.ch/bfm/?nav=1-0&id=basel_face_model
+[3] https://faces.dmi.unibas.ch/bfm/?nav=1-0&id=basel_face_model
 
-[2] https://faces.dmi.unibas.ch/bfm/bfm2019.html
+[4] https://faces.dmi.unibas.ch/bfm/bfm2019.html
 
-[3] P. Paysan et al. (2009) "A 3D Face Model for Pose and Illumination Invariant Face Recognition"
+[5] P. Paysan et al. (2009) "A 3D Face Model for Pose and Illumination Invariant Face Recognition"
 
 3DDFA V2
 --------
