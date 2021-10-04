@@ -33,9 +33,6 @@ https://www.kaggle.com/selfishgene/youtube-faces-with-facial-keypoints
 http://shuoyang1213.me/WIDERFACE/index.html
 For face detection.
 
-* BIWI
-Pose annotations were created from the depth information using a template based approach. Has video sequences. No key points. Different location of the head coordinate frame, so cannot yet be used for training. Might take the approach from Kaggle YT Face videos to add keypoint for training targets.
-
 Usage
 =====
 
@@ -173,6 +170,33 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-Datasets
---------
-TODO
+AFLW2000-3d / AFLW
+------------------
+
+AFLW2000-3d is derived from AFLW (https://www.tugraz.at/institute/icg/research/team-bischof/lrs/downloads/aflw/). The authors of AFLW2000-3d don't provide a license agreement. Hence, in the following the license of AFLW is reproduced:
+
+License Agreement
+
+By downloading the database you agree to the following restrictions:
+
+* The AFLW database is available for non-commercial research purposes only.
+* The AFLW database includes images obtained from FlickR which are not property of Graz University of Technology. Graz University of Technology is not responsible for the content nor the * meaning of these images. Any use of the images must be negociated with the respective picture owners, according to the Yahoo terms of use. In particular, you agree not to reproduce, duplicate, copy, sell, trade, resell or exploit for any commercial purposes, any portion of the images and any portion of derived data.
+* You agree not to further copy, publish or distribute any portion of the AFLW database. Except, for internal use at a single site within the same organization it is allowed to make copies of the database.
+* All submitted papers or any publicly available text using the AFLW database must cite our paper
+* The organization represented by you will be listed as users of the AFLW database.
+
+300W-LP / 300W
+--------------
+
+300W-LP is derived from 300W (https://ibug.doc.ic.ac.uk/resources/300-W/). 300W explicitly prohibits commercial use as stated on the project website. Citation:
+> The data are provided for research purposes only. Commercial use (i.e., use in training commercial algorithms) is not allowed.
+
+YouTube Faces With Facial Keypoints
+-----------------------------------
+
+Published under [CC0: Public Domain](https://creativecommons.org/publicdomain/zero/1.0/) which is a permissive license. This data set is derived from [YouTube Faces](https://www.cs.tau.ac.il/~wolf/ytfaces/) for which I did not find terms of use.
+
+WIDER FACE
+----------
+
+I did not find terms of use for this dataset specifically. However it is based on [WIDER](http://yjxiong.me/event_recog/WIDER/), where you have to agree to using the dataset for research purposes only before downloading.
