@@ -89,7 +89,7 @@ With results for the popular AFLW 2000 3D benchmark:
 |-------------------|-------|-------|-------|---------|
 | QuatNet           | 3.973 | 5.615 | 3.920 | 4.503   |
 | img2pose          | 3.426 | **5.034** | **3.278** | **3.913** |
-| **NN-Tracker (this work)** | **3.386** | 5.224 | 3.561 | 4.057 |
+| **NN-Tracker (this work)** | **3.375** | 5.222 | 3.560 | 4.052 |
 
 The values for QuatNet and img2pose are taken from [1]. The values for NN-Tracker were generated with the training code for first release with [opentrack 2021.1.2](https://github.com/opentrack/opentrack/releases/tag/opentrack-2021.1.2). For the comparison, I retrained a network, not training on AFLW 2000 3D since I was using it as test set. See [notebook in feature branch](https://github.com/opentrack/neuralnet-tracker-traincode/blob/proper-measurement/scripts/TrainKeypoints.ipynb).
 
