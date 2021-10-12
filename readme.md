@@ -88,10 +88,14 @@ With results for the popular AFLW 2000 3D benchmark:
 | Method            | Yaw   | Pitch | Roll  | Average |
 |-------------------|-------|-------|-------|---------|
 | QuatNet           | 3.973 | 5.615 | 3.920 | 4.503   |
-| img2pose          | 3.426 | **5.034** | **3.278** | **3.913** |
-| **NN-Tracker (this work)** | **3.375** | 5.222 | 3.560 | 4.052 |
+| img2pose          | **3.373** | **5.206** | **3.545** | **4.041** |
+| **NN-Tracker (this work,\*)** | 3.370 | 5.761 | 3.607 | 4.246 |
+| **NN-Tracker (this work,\**)** | 3.375 | 5.222 | 3.560 | 4.052 |
 
-The values for QuatNet and img2pose are taken from [1]. The values for NN-Tracker were generated with the training code for first release with [opentrack 2021.1.2](https://github.com/opentrack/opentrack/releases/tag/opentrack-2021.1.2). For the comparison, I retrained a network, not training on AFLW 2000 3D since I was using it as test set. See [notebook in feature branch](https://github.com/opentrack/neuralnet-tracker-traincode/blob/proper-measurement/scripts/TrainKeypoints.ipynb).
+\* Inputs cropped to ground-truth bounding boxes. This is what the network has been trained on.
+\*\* Inputs cropped to centers. Center cropping has been reported in [2] but I found no details. So I just picked a fixed percentage that looked good. I did *not* optimize the cropped section for best results!
+
+The values for QuatNet and img2pose are taken from [1]. The values for NN-Tracker were generated with the training code for first release with [opentrack 2021.1.2](https://github.com/opentrack/opentrack/releases/tag/opentrack-2021.1.2). For the comparison, I retrained a network, not training on AFLW 2000 3D since I was using it as test set. See [training notebook in feature branch](https://github.com/opentrack/neuralnet-tracker-traincode/blob/proper-measurement/scripts/TrainKeypoints.ipynb) and [evaluation notebook](https://github.com/opentrack/neuralnet-tracker-traincode/blob/proper-measurement/scripts/AFLW20003dEvaluation.ipynb)
 
 The authors of 3DDFA_V2 did not publish angle errors. A comparison of landmark position errors is still to be done ...
 
