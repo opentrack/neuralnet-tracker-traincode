@@ -12,9 +12,9 @@ And the second part is the actual pose network which looks at a region of intere
 * facial key points, which are used as additional training objective,
 * a new bounding box for the head. Currently is trained to return the bounding box of the key points.
 
-It is pretty straight forward, except maybe the key points. I loosly follow the approach from https://github.com/cleardusk/3DDFA_V2, where key points are literally a few key vertices taken from a deformable face model. The convolutional backbone actually outputs parameters for the deformable model. In computer graphics this is sometimes called "blend shapes" since some deformation vectors are superimposed by linear combination.
+It is pretty straight forward, except maybe the key points. I loosly follow the approach from https://github.com/cleardusk/3DDFA_V2, where key points are literally specific vertices taken from a deformable face model. The convolutional backbone outputs parameters for the deformable model. In computer graphics this is sometimes called "blend shapes" since some deformation vectors are superimposed by linear combination.
 
-Regarding localization, I use the Wider Face dataset which is for general face detection. But since my network only supports to find one face, I do execessive processing to generate pairs of images with exactly one and without face, respectively. Detection is hard and I wanted to mess around with my own networks.
+Regarding localization, I use the Wider Face dataset which is for general face detection. My network only supports localization of a single object, I do execessive processing to generate pairs of images with exactly one and no face, respectively.
 
 Datasets
 ========
@@ -77,27 +77,34 @@ Miscellaneous
 Comparison with literature references
 -------------------------------------
 
-It is common in the head-pose estimation literature to compare yaw, pitch and roll errors  - more precisely the mean absolute error (MAE), which is simply the average of `|xhat - x|` taken over the test set, where `xhat` is the angle prediction and `x` the ground truth value respectively.
+It is common in the head-pose estimation literature to compare yaw, pitch and roll errors - more precisely the mean absolute error (MAE), which is simply the average of `|xhat - x|` taken over the test set, where `xhat` is the angle prediction and `x` the ground truth value respectively.
 
 There are two recent works which can be taken for reference:
-[1] Albiero et al. (2021) "img2pose: Face Alignment and Detection via 6DoF, Face Pose Estimation"
-[2] Hsu et al. (2018) "Quatnet: Quaternion-based head pose estimation with multiregression loss"
 
-With results for the popular AFLW 2000 3D benchmark:
+*[1] Albiero et al. (2021) "img2pose: Face Alignment and Detection via 6DoF, Face Pose Estimation"*
+*[2] Hsu et al. (2018) "Quatnet: Quaternion-based head pose estimation with multiregression loss"*
+
+And also 3DDFA_V2 with the limitation that I have to measure the angle errors myself.
+
+*[3] Guo et al. (2020) "Towards Fast, Accurate and Stable 3D Dense Face Alignment"*
+
+The following table shows results for the popular AFLW 2000 3D benchmark:
 
 | Method            | Yaw   | Pitch | Roll  | Average |
 |-------------------|-------|-------|-------|---------|
-| QuatNet           | 3.973 | 5.615 | 3.920 | 4.503   |
-| img2pose          | **3.373** | **5.206** | **3.545** | **4.041** |
-| **NN-Tracker (this work,\*)** | 3.370 | 5.761 | 3.607 | 4.246 |
-| **NN-Tracker (this work,\**)** | 3.375 | 5.222 | 3.560 | 4.052 |
+| img2pose [1]         | 3.4** | **5.034** | **3.278** | **3.913** |
+| QuatNet [2]          | 3.973 | 5.615 | 3.920 | 4.503   |
+| **NN-Tracker \*** | 3.373 | 5.206 | 3.545 | 4.041 |
+| **NN-Tracker \*\*** | 3.370 | 5.761 | 3.607 | 4.246 |
+| (3DDFA_V2 [3] \*\*\*) | **3.183** | 5.227 | 3.468 | 3.959   |
 
-\* Inputs cropped to ground-truth bounding boxes. This is what the network has been trained on.
+\* Inputs cropped to ground-truth face bounding boxes. This is what the network has been trained on.
 \*\* Inputs cropped to centers. Center cropping has been reported in [2] but I found no details. So I just picked a fixed percentage that looked good. I did *not* optimize the cropped section for best results!
+\*\*\* *According to my own measurement.* Using bounding boxes of ground truth landmark annotations. See [3DDFA_V2 evaluation notebook](https://github.com/DaWelter/3DDFA_V2/blob/master/AFLW20003dEvaluation.ipynb).
 
-The values for QuatNet and img2pose are taken from [1]. The values for NN-Tracker were generated with the training code for first release with [opentrack 2021.1.2](https://github.com/opentrack/opentrack/releases/tag/opentrack-2021.1.2). For the comparison, I retrained a network, not training on AFLW 2000 3D since I was using it as test set. See [training notebook in feature branch](https://github.com/opentrack/neuralnet-tracker-traincode/blob/proper-measurement/scripts/TrainKeypoints.ipynb) and [evaluation notebook](https://github.com/opentrack/neuralnet-tracker-traincode/blob/proper-measurement/scripts/AFLW20003dEvaluation.ipynb)
+3DDFA_V2 relies on bounding boxes from the FaceBoxes detector. This detector failed on a few images. When the input boxes are taken from the detector, excluding failures, the performace dropped to an average MAE of 4.010°.
 
-The authors of 3DDFA_V2 did not publish angle errors. A comparison of landmark position errors is still to be done ...
+The values for QuatNet and img2pose are taken from [1]. The values for NN-Tracker were generated with the training code for the first release with [opentrack 2021.1.2](https://github.com/opentrack/opentrack/releases/tag/opentrack-2021.1.2). For this comparison, I retrained a network, not training on AFLW 2000 3D since I was using it as test set. See [training notebook in feature branch](https://github.com/opentrack/neuralnet-tracker-traincode/blob/proper-measurement/scripts/TrainKeypoints.ipynb) and [evaluation notebook](https://github.com/opentrack/neuralnet-tracker-traincode/blob/proper-measurement/scripts/AFLW20003dEvaluation.ipynb)
 
 Head coordinate frame
 ---------------------
