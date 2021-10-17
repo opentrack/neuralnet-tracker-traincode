@@ -5,6 +5,7 @@ from torch.utils.data import Dataset, DataLoader, random_split, Subset
 import torch
 from matplotlib import pyplot
 from matplotlib.widgets import Button
+import enum
 
 import utils
 
@@ -37,14 +38,22 @@ def draw_axis(img, rot, tdx=None, tdy=None, size = 100, brgt = 255, lw=3):
     return img
 
 
-def draw_points3d(img, pt3d, labels=True, brightness=255):
+def draw_points3d(img, pt3d, labels=True, brightness=255, color=None):
+    if color is not None:
+        r, g, b = color
+    else:
+        g = brightness
+        b = r = brightness//2
     for i, p in enumerate(pt3d[:2,:].T):
-        r = b = brightness
         p = tuple(p.astype(int))
         if labels:
             cv2.putText(img, str(i), (p[0]+2,p[1]), cv2.FONT_HERSHEY_SIMPLEX,
                     0.3, (255,255,255), 1, cv2.LINE_AA)
-        cv2.circle(img, p, 2, (r,brightness,b), -1)
+        cv2.circle(img, p, 1, (r,g,b), -1)
+
+
+def draw_roi(img, roi, color, linewidth):
+    cv2.rectangle(img, (round(roi[0]),round(roi[1])), (round(roi[2]),round(roi[3])), color, linewidth)
 
 
 def _unnormalize_sample(img, sample):
@@ -97,7 +106,10 @@ def _draw_sample(img, sample, is_prediction, labels=True):
         color = ((0,brightness,0) if sample['hasface']>0.5 else (brightness,0,0)) \
                 if 'hasface' in sample else (brightness,0,brightness)
         roi = sample['roi']
-        cv2.rectangle(img, (int(roi[0]),int(roi[1])), (int(roi[2]),int(roi[3])), color, linewidth)
+        draw_roi(img, roi, color, linewidth)
+    if 'roi_head' in sample:
+        color = (brightness,brightness,brightness)
+        draw_roi(img, sample['roi_head'], color, linewidth)
     if 'hasface' in sample and sample['hasface']<0.5:
         color = (brightness,0,0)
         cv2.line(img, (0,0), (img.shape[1],img.shape[0]), color, linewidth)
@@ -107,18 +119,151 @@ def _draw_sample(img, sample, is_prediction, labels=True):
             labels, brightness)
 
 
-def draw_prediction(ax, sample_pred):
+def draw_prediction(sample_pred):
     sample, pred = sample_pred
     img = sample['image'].copy()
     _draw_sample(img, sample, False, False)
     _draw_sample(img, pred, True, False)
-    ax.imshow(img)
+    return img
 
 
-def draw_dataset_sample(ax, sample, label=True):
+def draw_dataset_sample(sample, label=True):
     img = sample['image'].copy()
     _draw_sample(img, sample, False, label)
-    ax.imshow(img)
+    return img
+
+
+def _compress(img):
+    _, img = cv2.imencode('.PNG', cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+    return img.tobytes()
+
+
+def _generate_items(xrange, yrange, generate_sample):
+    return sum([ 
+        [ generate_sample(i,j) for i in xrange
+        ] for j in yrange ]
+    , [])
+
+
+def _assemble_collage(images, cols):
+    shape = np.amax(np.asarray([ img.shape for img in images ]), axis=0)
+    for i, img in enumerate(images):
+        if img.shape != tuple(shape):
+            tmp = np.zeros(shape, dtype=np.uint8)
+            tmp[:img.shape[0],:img.shape[1],:] = img
+            images[i] = tmp
+    images = [ *utils.iter_batched(images, cols) ]
+    images = np.vstack([ np.hstack(row) for row in images ])
+    return images
+
+
+class Backend(enum.Enum):
+    JUPYTER = 1
+    WINDOW = 2
+
+
+def display_image_panel_simple(generate_sample, rows : int, cols : int, title='Image Panel', oneway=False, stride=1):
+    import PySimpleGUI as sg
+
+    offset_col = 0
+
+    def regenerate_collage():
+        return _compress(_assemble_collage(
+            _generate_items(range(offset_col, cols+offset_col),range(rows), generate_sample),
+            cols))
+
+    buttons = [ sg.Button("Next") ]
+    if not oneway:
+        buttons = [ sg.Button("Prev") ] + buttons
+    layout = [
+        [ sg.Image(key="Image", data=regenerate_collage()) ],
+        buttons
+    ]
+    # Create the window
+    window = sg.Window(title, layout)
+    # Create an event loop
+    while True:
+        event, values = window.read()
+
+        if event == sg.WIN_CLOSED:
+            break
+
+        if event == 'Prev' or event == 'Next':
+            offset_col += stride if event == 'Next' else -stride
+            window['Image'].update(data=regenerate_collage())
+
+    window.close()
+
+
+def display_image_panel_jupyter(generate_sample, rows : int, cols : int, oneway=False, stride=1):
+    from ipywidgets import Layout, Box, VBox, HBox, Image, Button
+
+    offset_col = 0
+
+    def regenerate_collage():
+        return _assemble_collage(
+            _generate_items(range(offset_col, cols+offset_col),range(rows), generate_sample),
+            cols)
+
+    initial = regenerate_collage()
+
+    img_widget = Image(
+        format='raw',
+        value = _compress(initial),
+        width=initial.shape[1],
+        height=initial.shape[0],
+    )
+
+    next = Button(description='Next', layout=Layout(width='auto'))
+    def on_next(*args):
+        nonlocal offset_col
+        offset_col += stride
+        img_widget.value = _compress(regenerate_collage())
+    next.on_click(on_next)
+
+    if not oneway:
+        prev = Button(description='Prev', layout=Layout(width='auto'))
+        def on_prev(*args):
+            nonlocal offset_col
+            offset_col -= stride
+            img_widget.value = _compress(regenerate_collage())
+        prev.on_click(on_prev)
+
+    buttons = [ next ]
+    if not oneway:
+        buttons = [ prev ] + buttons
+
+    box = VBox([HBox(buttons), img_widget])
+    return box
+
+
+def display_image_panel(backend : Backend, *args, **kwargs):
+    if backend == Backend.JUPYTER:
+        return display_image_panel_jupyter(*args, **kwargs)
+    else:
+        return display_image_panel_simple(*args, **kwargs)
+
+
+def display_image_panel_iterable(backend : Backend, iterable, drawfunc, rows : int = 3, cols : int = 3, **kwargs):
+    '''
+        Generates a tile grid of plots showing items from 'iterable'.
+        The 'drawfunc' takes an item and an axes and is responsible for
+        the actual drawing.
+        There is also a button to show advance to the next items.
+        
+        Returns figure and button.
+        
+        Note: use %matplotlib notebook in order for the button to work.
+    '''
+    it = iter(iterable)
+    def generate_sample(col, row):
+        nonlocal it
+        try:
+            img = drawfunc(next(it))
+        except StopIteration:
+            img = np.zeros((1,1,3), dtype=np.uint8)
+        return img
+    return display_image_panel(backend, generate_sample, rows, cols, oneway=True, stride=cols, **kwargs)
 
 
 def matplotlib_plot_iterable(iterable, drawfunc, rows=3, cols=3, figsize=(10,10)):
@@ -170,7 +315,8 @@ def matplotlib_plot_iterable(iterable, drawfunc, rows=3, cols=3, figsize=(10,10)
                 ax.imshow(blank)
                 reset = True
             else:
-                drawfunc(ax, sample)
+                img = drawfunc(sample)
+                ax.imshow(img)
             ax.set_axis_off()
         if reset:
             it.reset()

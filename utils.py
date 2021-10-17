@@ -80,7 +80,16 @@ def convert_to_rot(net_output):
 
 
 def convert_from_rot(rot):
-    return rot.as_quat().astype(np.float32)
+    quat = rot.as_quat().astype(np.float32)
+    # q and -q represent the same rotation. So we arbitrarily demand
+    # the real component to be positive. Hopefully this prevents the
+    # network from getting confused.
+    if len(quat.shape) == 2:
+        quat[quat[:,-1]<0] *= -1
+    else:
+        quat *= -1
+    # TODO: When using this, maybe apply exp function to neural net output to force positivity
+    return quat
 
 
 def undo_collate(batch):
@@ -93,3 +102,48 @@ def undo_collate(batch):
     N = batch[keys[0]].shape[0]  # First dimension should be the batch size
     for i in range(N):
         yield { k:batch[k][i] for k in keys }
+
+
+def inv_rotation_conversion_from_hell(rot):
+    x, y, z = rot.as_matrix().T
+    x, y, z = np.array([z, -y, -x]).T
+    m = np.array([z, -y, -x])
+    p,y,r = Rotation.from_matrix(m).as_euler('XYZ')
+    return np.asarray([-p,-y,-r])
+
+
+def angle_errors(euler1, euler2):
+    v1 = np.concatenate([np.cos(euler1)[...,None],np.sin(euler1)[...,None]],axis=-1)
+    v2 = np.concatenate([np.cos(euler2)[...,None],np.sin(euler2)[...,None]],axis=-1)
+    angles = np.arccos(np.sum(v1*v2, axis=-1))
+    return angles
+
+
+def affine3d_chain(Ta, Tb):
+    Ra, ta = Ta
+    Rb, tb = Tb
+    return Ra*Rb, Ra.as_matrix().dot(tb) + ta
+
+
+def affine3d_inv(Ta):
+    Ra, ta = Ta
+    RaInv = Ra.inv()
+    return RaInv, -RaInv.as_matrix().dot(ta)
+
+
+def iter_batched(iterable, batchsize):
+    it = iter(iterable)
+    while True:
+        ret = [*zip(range(batchsize),it)]
+        ret = [ x for _,x in ret ]
+        if not ret:
+            break
+        yield ret
+
+
+if __name__ == '__main__':
+    R1 = Rotation.random()
+    t1 = np.random.rand(3)
+    inv = affine3d_inv((R1,t1))
+    R2, t2 = affine3d_chain((R1,t1), inv)
+    print(R2.as_matrix(),t2)

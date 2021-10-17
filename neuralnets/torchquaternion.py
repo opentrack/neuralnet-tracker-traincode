@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional
 import numpy as np
 
 
@@ -60,3 +61,42 @@ def rotate(q, p):
     out[...,ij] = -tmp[...,iw]*qj + tmp[...,ii]*qk + tmp[...,ij]*qw - tmp[...,ik]*qi
     out[...,ik] = -tmp[...,iw]*qk - tmp[...,ii]*qj + tmp[...,ij]*qi + tmp[...,ik]*qw
     return out
+
+
+def tomatrix(q):
+    """
+        Input: Quaternions. 
+               Quaternions dimensions must be in the last tensor dimensions. 
+               Quaternions must be normalized.
+               Real component must be last.
+    """
+    iw = 3
+    ii = 0
+    ij = 1
+    ik = 2
+    qi = q[...,ii]
+    qj = q[...,ij]
+    qk = q[...,ik]
+    qw = q[...,iw]
+    out = q.new_empty(q.shape[:-1]+(3,3))
+    out[...,0,0] = 1. - 2.*(qj*qj + qk*qk)
+    out[...,1,0] =      2.*(qi*qj + qk*qw)
+    out[...,2,0] =      2.*(qi*qk - qj*qw)
+    out[...,0,1] =      2.*(qi*qj - qk*qw)
+    out[...,1,1] = 1. - 2.*(qi*qi + qk*qk)
+    out[...,2,1] =      2.*(qj*qk + qi*qw)
+    out[...,0,2] =      2.*(qi*qk + qj*qw)
+    out[...,1,2] =      2.*(qj*qk - qi*qw)
+    out[...,2,2] = 1. - 2.*(qi*qi + qj*qj)
+    return out
+
+
+def normalized(q):
+    return torch.nn.functional.normalize(q, p=2, dim=-1, eps=1.e-6)
+
+
+def distance(a, b):
+    # Different variants. Don't make much difference ... I think
+    return 1.-torch.square(torch.sum(a * b, dim=-1))
+    #return 1. - torch.abs(torch.sum(a * b, dim=-1))
+    #return torch.min(torch.norm(a-b,p=2,dim=-1), torch.norm(a+b,p=2,dim=-1))

@@ -129,10 +129,11 @@ def no_face_crop(imgshape, box, aspect, rnd):
 
 
 class SingleWiderFaces(object):
-    def __init__(self, root, validation):
+    def __init__(self, root, validation, maxsize = 640):
         self.rnd = np.random.RandomState(seed=123)
         self.validation = validation
         self.root = root
+        self.maxsize = maxsize
         with WiderFace(root, validation) as wf:
             self.singleface_annos = [a for a in wf.annotations if len(a.boxes)==1]
 
@@ -156,8 +157,8 @@ class SingleWiderFaces(object):
     
     def _maybe_scale(self, img, box):
         h, w, _ = img.shape
-        if h > 640 or w > 640:
-            f = 640. / max(h,w)
+        if h > self.maxsize or w > self.maxsize:
+            f = self.maxsize / max(h,w)
             w = round(w*f)
             h = round(h*f)
             img = cv2.resize(img, (w, h), interpolation = cv2.INTER_AREA)
@@ -169,12 +170,17 @@ class SingleWiderFaces(object):
             box = (x0, y0, x1, y1)
         return img, box
 
+    @staticmethod
+    def _box_for_noface(img):
+        h, w, _ = img.shape
+        return (w//4,h//4,w*3//4,h*3//4)
+
     def _make_sample(self, img, cropbox, box, hasface):
         img, box = self._cropimg(img, cropbox, box)
         img, box = self._maybe_scale(img, box)
         return {
             'image' : img,
-            'roi' : box if hasface else (0,0,0,0),
+            'roi' : box if hasface else self._box_for_noface(img),
             'hasface' : hasface
         }
 
@@ -191,10 +197,10 @@ class SingleWiderFaces(object):
                 yield self._make_sample(img, (ex0, ey0, ex1, ey1), box, False)
 
 
-def generate_hdf5_dataset(source_dir, outfilename, count=None):
+def generate_hdf5_dataset(source_dir, outfilename, count, maxsize):
     dt = h5py.special_dtype(vlen=np.dtype('uint8'))
-    wfval = SingleWiderFaces(source_dir, validation=True)
-    wftrain = SingleWiderFaces(source_dir, validation=False)
+    wfval = SingleWiderFaces(source_dir, validation=True, maxsize=maxsize)
+    wftrain = SingleWiderFaces(source_dir, validation=False, maxsize=maxsize)
     N = len(wftrain) + len(wfval)
     if count is not None:
         N = min(count, N)
@@ -216,7 +222,8 @@ if __name__ == '__main__':
     parser.add_argument('source', help="source file", type=str)
     parser.add_argument('destination', help='destination file', type=str, nargs='?', default=None)
     parser.add_argument('-n', dest = 'count', type=int, default=None)
+    parser.add_argument('--maxsize', dest='maxsize', type=int, default=640)
     args = parser.parse_args()
     dst = args.destination if args.destination else \
         args.source+'.h5'
-    generate_hdf5_dataset(args.source, dst, args.count)
+    generate_hdf5_dataset(args.source, dst, args.count, args.maxsize)

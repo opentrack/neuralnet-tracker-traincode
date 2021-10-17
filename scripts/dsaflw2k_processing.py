@@ -11,10 +11,9 @@ import zipfile
 
 from datasets.preprocessing import imdecode, rotation_conversion_from_hell,\
     compute_keypoints_from_3ddfa_shape_params, depth_centered_keypoints, \
-    move_aflw_head_center_to_between_eyes, extended_key_points_for_bounding_box
+    move_aflw_head_center_to_between_eyes, extended_key_points_for_bounding_box, \
+    get_3ddfa_shape_parameters
 
-border_size_frac = 0.1
-roi_out_of_bound_tol = 0
 
 def is_sample_file(fn):
     return splitext(fn)[1]=='.mat' and not fn.endswith(sep) \
@@ -55,12 +54,15 @@ def read_data(zf, matfile):
     x1, y1, _ = np.amax(extpts, axis=1)
     roi = np.array([x0, y0, x1, y1])
 
+    f_shp, f_exp = get_3ddfa_shape_parameters(data)
+
     return { 
         'pose' :  rot.as_quat(),
         'coord' : coord,
         'roi' : roi, 
         'image' : np.frombuffer(jpgbuffer, dtype='B'),
         'pt3d_68' : pt3d,
+        'shapeparam' : np.concatenate([f_shp, f_exp])
     }
 
 
@@ -79,6 +81,7 @@ def generate_hdf5_dataset(source_file, outfilename, count=None):
             ds_coords = f.create_dataset('coords', (N,3), chunks=(cs,3), maxshape=(N,3), dtype='f4')
             ds_pt3d_68 = f.create_dataset('pt3d_68', (N,3,68), chunks=(cs,3,68), maxshape=(N,3,68), dtype='f4')
             ds_roi = f.create_dataset('rois', (N,4), chunks=(cs,4), maxshape=(N,4), dtype='f4')
+            ds_shapeparams = f.create_dataset('shapeparams', (N,50), chunks=(cs,50), maxshape=(N,50), dtype='f4')
             i = 0
             with progressbar.ProgressBar() as bar:
                 for matfile in bar(filenames):
@@ -88,7 +91,10 @@ def generate_hdf5_dataset(source_file, outfilename, count=None):
                     ds_coords[i] = sample['coord']
                     ds_pt3d_68[i] = sample['pt3d_68']
                     ds_roi[i] = sample['roi']
+                    ds_shapeparams[i] = sample['shapeparam']
                     i += 1
+            #print("")
+            #print(f"Shape Std: {repr(ds_shapeparams[...].std(axis=0))}")
 
 
 if __name__ == '__main__':

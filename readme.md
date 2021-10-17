@@ -59,6 +59,7 @@ python scripts/dsaflw2k_processing.py    $@ $DATADIR/AFLW2000-3D.zip $DATADIR/af
 python scripts/ds300wlp_processing.py    $@ $DATADIR/300W-LP.zip $DATADIR/300wlp.h5
 python scripts/dsytfaces_processing.py   $@ $DATADIR/YTFaces $DATADIR/ytfaces.h5
 python scripts/dswiderface_processing.py $@ $DATADIR/wider_faces $DATADIR/widerfacessingle.h5
+python scripts/fitkeypoints.py $DATADIR/ytfaces.h5
 ```
 
 Check the data with the help of the notebook `DataVisualization.ipynb`.
@@ -101,6 +102,16 @@ Before I tried that I made the ugly hack with image augmentation on the GPU usin
 See also
 https://github.com/ContinuumIO/anaconda-issues/issues/10041
 https://github.com/opencv/opencv/issues/11107#issuecomment-393475735
+
+
+Tests
+-----
+There is no intention to have really good test and good coverage. However there
+are a few tests in the test folder. Mostly they make sure that the code runs
+without crashing.
+
+Simply executing `pytest` in the test folder should be enough to run all tests.
+
 
 Licensing
 =========

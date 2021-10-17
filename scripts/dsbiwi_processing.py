@@ -5,7 +5,7 @@ from os.path import join, dirname, basename, splitext
 import re
 import math
 import progressbar
-import zipfile
+import tarfile
 from scipy.spatial.transform import Rotation
 import scipy.io
 import cv2
@@ -15,12 +15,11 @@ import argparse
 import io
 from collections import defaultdict
 
-from datasets.preprocessing import PinholeCam, imdecode, imencode
+from datasets.preprocessing import PinholeCam, imdecode, imencode, extract_image_roi
 
 PROJ_FOV = 65.
 HEAD_SIZE_MM = 100.
-border_size_frac = 0.1
-roi_out_of_bound_tol = 0
+
 
 dt = h5py.special_dtype(vlen=np.dtype('uint8'))
 
@@ -28,14 +27,18 @@ dt = h5py.special_dtype(vlen=np.dtype('uint8'))
 def get_pose_from_mat(f):
     lines = f.readlines()
     matrix = np.array([[*map(float,row.split(' ')[:3])] for row in lines[:3]])
-    P = np.array([
-        [ 0, 0, 1 ],
-        [ 0, 1, 0  ],
-        [ 1, 0, 0  ]
-    ], dtype=np.float64)
-    matrix = np.dot(P, np.dot(matrix, P))
     rot = Rotation.from_matrix(matrix)
     pos = np.array([*map(float, lines[4].split(' ')[:3])])
+    return rot, pos
+
+
+def get_camera_extrinsics(zf, fn):
+    with io.StringIO(zf.extractfile(fn).read().decode('ascii')) as f:
+        lines = f.readlines()
+    intrin, intrin, intrin, _, _, _, m1, m2, m3, _, pos, _, res = lines
+    matrix = np.array([[*map(float,row.split(' ')[:3])] for row in [m1, m2, m3]])
+    rot = Rotation.from_matrix(matrix)
+    pos = np.array([*map(float, pos.split(' ')[:3])])
     return rot, pos
 
 
@@ -57,15 +60,15 @@ def find_image_file_names(zf):
     """
         Returns dict of filename lists. Keys are person numbers.
     """
-    regex = re.compile(r'(\d\d)/frame_(\d\d\d\d\d)_rgb.png')
+    regex = re.compile(r'hpdb/(\d\d)/frame_(\d\d\d\d\d)_rgb.png')
     samples = defaultdict(list)
-    for f in zf.filelist:
-        m = regex.match(f.filename)
+    for f in zf.getmembers():
+        m = regex.match(f.name)
         if m is None:
             continue
         person = int(m.group(1))
         frame = m.group(2)
-        samples[person].append((frame, f.filename))
+        samples[person].append((frame, f.name))
     for k, v in samples.items():
         # Sort by frame number then discard frame number
         v = sorted(v, key = lambda t: t[0])
@@ -73,15 +76,37 @@ def find_image_file_names(zf):
     return samples
 
 
-def read_data(zf, imagefile):
+def find_cal_files(zf):
+    regex = re.compile(r'hpdb/(\d\d)/rgb.cal')
+    cal_files = {}
+    for f in zf.getmembers():
+        m = regex.match(f.name)
+        if m is None:
+            continue
+        person = int(m.group(1))
+        cal_files[person] = f.name
+    return cal_files
+
+
+def read_data(zf, imagefile, cal):
     posefile = imagefile[:-len('_rgb.png')]+'_pose.txt'
 
-    imgbuffer = zf.read(imagefile)
+    imgbuffer = zf.extractfile(imagefile).read()
     img = imdecode(imgbuffer, True) # BGR
     h, w, _ = img.shape
 
-    with io.StringIO(zf.read(posefile).decode('ascii')) as f:
+    with io.StringIO(zf.extractfile(posefile).read().decode('ascii')) as f:
         rot, pos = get_pose_from_mat(f)
+    
+    cam_inv = cal #utils.affine3d_inv(cal)
+    rot, pos = utils.affine3d_chain(cam_inv, (rot, pos))
+    P = np.array([
+        [ 0, 0, 1 ],
+        [ 0, 1, 0  ],
+        [ 1, 0, 0  ]
+    ], dtype=np.float64)
+    rot = Rotation.from_matrix(np.dot(P, np.dot(rot.as_matrix(), P)))
+
     rot_correction = compute_rotation_to_vector(pos)
     rot = rot_correction.inv() * rot
 
@@ -90,7 +115,13 @@ def read_data(zf, imagefile):
     # FIXME: Biwi has a different way to represent the head size than
     #        AFLW & 300W-LP. This must be accounted for!
     size = cam.project_size_to_image(pos[2], HEAD_SIZE_MM)
-    roi = np.array([(x-size, y-size, x+size, y+size)])
+    roi = np.array([x-size, y-size, x+size, y+size])
+
+    img, offset = extract_image_roi(img, roi, 0.5, return_offset=True)
+    roi[[0,1]] += offset
+    roi[[2,3]] += offset
+    x += offset[0]
+    y += offset[1]
 
     return { 
         'pose' :  rot.as_quat(),
@@ -102,12 +133,14 @@ def read_data(zf, imagefile):
 
 
 def generate_hdf5_dataset(source_file, outfilename, count=None):
-    # FIXME: Add a dataset id
-    with zipfile.ZipFile(source_file) as zf:
+    every = 3
+    with tarfile.open(source_file,mode='r') as zf:
+        calibration_data = { 
+            k:get_camera_extrinsics(zf,fn) for k,fn in find_cal_files(zf).items() }
         sequence_frames = find_image_file_names(zf)
-        if count:
+        if count or every:
             for k, v in sequence_frames.items():
-                sequence_frames[k] = v[:count]
+                sequence_frames[k] = v[slice(0,count,every)]
         sequence_lengths = [len(v) for v in sequence_frames.values()]
         N = sum(sequence_lengths)
         cs = min(N, 1024)
@@ -119,15 +152,17 @@ def generate_hdf5_dataset(source_file, outfilename, count=None):
             ds_roi = f.create_dataset('rois', (N,4), chunks=(cs,4), maxshape=(N,4), dtype='f4')
             f.create_dataset('sequence_starts', data = np.cumsum([0]+sequence_lengths))
             i = 0
-            with progressbar.ProgressBar() as bar:
-                for fn in bar(sum(sequence_frames.values(), [])):
-                    sample = read_data(zf, fn)
-                    ds_img[i] = sample['image']
-                    ds_quats[i] = sample['pose']
-                    ds_coords[i] = sample['coord']
-                    ds_file[i] = sample['file']
-                    ds_roi[i] = sample['roi']
-                    i += 1
+            with progressbar.ProgressBar(max_value=N) as bar:
+                for ident, frames in sequence_frames.items():
+                    for fn in frames:
+                        bar.update(i)
+                        sample = read_data(zf, fn, calibration_data[ident])
+                        ds_img[i] = sample['image']
+                        ds_quats[i] = sample['pose']
+                        ds_coords[i] = sample['coord']
+                        ds_file[i] = sample['file']
+                        ds_roi[i] = sample['roi']
+                        i += 1
 
 
 if __name__ == '__main__':

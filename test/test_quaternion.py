@@ -1,11 +1,11 @@
 from scipy.spatial.transform import Rotation
-from neuralnets.torchquaternion import mult, rotate
+from neuralnets.torchquaternion import mult, rotate, tomatrix
 
 import torch
 import numpy as np
     
 
-if __name__ == '__main__':
+def test_quaternions():
         us = Rotation.from_rotvec(np.random.uniform(0.,1.,size=(7,3)))
         vs = Rotation.from_rotvec(np.random.uniform(0.,1.,size=(7,3)))
         q_test = (us * vs).as_quat()
@@ -17,3 +17,11 @@ if __name__ == '__main__':
         q_test = np.matmul(us.as_matrix()[None,...], vs)[...,0]
         q_expect = rotate(torch.from_numpy(us.as_quat()[None,...]), torch.from_numpy(vs[...,0]))
         assert np.allclose(q_test, q_expect)
+
+        rots = Rotation.random(10)
+        m_test = tomatrix(torch.from_numpy(rots.as_quat())).numpy()
+        m_expect = rots.as_matrix()
+        assert np.allclose(m_test, m_expect)
+
+if __name__ == '__main__':
+        test_quaternions()

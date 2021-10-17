@@ -11,22 +11,34 @@ import h5py
 import scipy.io
 import cv2
 import progressbar
+import collections
+from typing import List
+import re
+
 
 from datasets.preprocessing import imdecode, rotation_conversion_from_hell,\
     compute_keypoints_from_3ddfa_shape_params, depth_centered_keypoints, \
-    move_aflw_head_center_to_between_eyes, extended_key_points_for_bounding_box
+    move_aflw_head_center_to_between_eyes, extended_key_points_for_bounding_box, \
+    get_3ddfa_shape_parameters
 
 
 def discover_samples(zf):
     names = frozenset(['AFW', 'HELEN', 'IBUG', 'LFPW'])
     isInDataSubsets = lambda s: s.split(os.path.sep)[1] in names
-    filenames = [ 
+    filenames = [
         f.filename for f in zf.filelist if 
         (f.external_attr==0x20 and splitext(f.filename)[1]=='.mat' and isInDataSubsets(f.filename)) ]
     return filenames
 
 
-
+def make_groups(filenames : List[str]):
+    regex = re.compile('([\w| ]+)_(\d+).mat')
+    d = collections.defaultdict(list)
+    for fn in filenames:
+        match = regex.match(os.path.basename(fn))
+        assert match is not None, f'Fail to match {fn}'
+        d[match.groups()[0]].append(fn)
+    return d
 
 
 def read_sample(zf, matfile):
@@ -59,6 +71,8 @@ def read_sample(zf, matfile):
     x1, y1, _ = np.amax(extpts, axis=1)
     roi = np.array([x0, y0, x1, y1])
 
+    f_shp, f_exp = get_3ddfa_shape_parameters(data)
+
     return { 
         'pose' :  rot.as_quat(),
         'coord' : coord,
@@ -66,17 +80,19 @@ def read_sample(zf, matfile):
         'image' : np.frombuffer(jpgbuffer, dtype='B'),
         'file' : ('300wlp/'+splitext(basename(matfile))[0]).encode('ascii'),
         'pt3d_68' : pt3d,
+        'shapeparam' : np.concatenate([f_shp, f_exp])
     }
 
 
 def generate_hdf5_dataset(source_file, outfilename, count=None):
     dt = h5py.special_dtype(vlen=np.dtype('uint8'))
     with zipfile.ZipFile(source_file) as zf:
-        filenames = sorted(discover_samples(zf))
-        np.random.RandomState(seed=123).shuffle(filenames)
+        filename_groups = [* make_groups(discover_samples(zf)).items() ]
+        np.random.RandomState(seed=123).shuffle(sorted(filename_groups))
         if count:
-            filenames = filenames[:count]
-        N = len(filenames)
+            filename_groups = filename_groups[:count]
+        sequence_starts = np.cumsum([0]+[len(fs) for _,fs in filename_groups])
+        N = sequence_starts[-1]
         cs = min(N, 1024)
         with h5py.File(outfilename, 'w') as f:
             ds_img = f.create_dataset('images', (N,), chunks=(cs,), maxshape=(N,), dtype=dt)
@@ -87,17 +103,22 @@ def generate_hdf5_dataset(source_file, outfilename, count=None):
             ds_pt3d_68 = f.create_dataset('pt3d_68', (N,3,68), chunks=(cs,3,68), maxshape=(N,3,68), dtype='f4')
             ds_file = f.create_dataset('files', (N,), chunks=(cs,), maxshape=(N,), dtype='S40')
             ds_roi = f.create_dataset('rois', (N,4), chunks=(cs,4), maxshape=(N,4), dtype='f4')
+            ds_shapeparams = f.create_dataset('shapeparams', (N,50), chunks=(cs,50), maxshape=(N,50), dtype='f4')
+            f.create_dataset('sequence_starts', data = sequence_starts)
             i = 0
-            with progressbar.ProgressBar() as bar:
-                for fn in bar(filenames):
-                    sample = read_sample(zf, fn)
-                    ds_img[i] = sample['image']
-                    ds_quats[i] = sample['pose']
-                    ds_coords[i] = sample['coord']
-                    ds_pt3d_68[i] = sample['pt3d_68']
-                    ds_file[i] = sample['file']
-                    ds_roi[i] = sample['roi']
-                    i += 1
+            with progressbar.ProgressBar(max_value=N) as bar:
+                for _, filenames in filename_groups:
+                    for fn in filenames:
+                        sample = read_sample(zf, fn)
+                        ds_img[i] = sample['image']
+                        ds_quats[i] = sample['pose']
+                        ds_coords[i] = sample['coord']
+                        ds_pt3d_68[i] = sample['pt3d_68']
+                        ds_file[i] = sample['file']
+                        ds_roi[i] = sample['roi']
+                        ds_shapeparams[i] = sample['shapeparam']
+                        i += 1
+                        bar.update(i)
 
 
 if __name__ == '__main__':

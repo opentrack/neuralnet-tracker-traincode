@@ -30,6 +30,7 @@ def imdecode(blob, color=False):
     if isinstance(blob, bytes):
         blob = np.frombuffer(blob, dtype='B')
     img = cv2.imdecode(blob, cv2.IMREAD_COLOR if color else 0)
+    assert img is not None
     if color == 'rgb':
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     return img
@@ -110,11 +111,12 @@ def compute_padding(roi, w, h):
 
 def roi_to_ints(roi):
     x0, y0, x1, y1 = roi
-    x0 = int(math.floor(x0))
-    y0 = int(math.floor(y0))
-    x1 = int(math.ceil(x1))
-    y1 = int(math.ceil(y1))
-    return (x0, y0, x1, y1)
+    # This code has to preserve the property that width==height if present.
+    roi_w = round(x1-x0)
+    roi_h = round(y1-y0)
+    x0 = round(x0)
+    y0 = round(y0)
+    return (x0, y0, x0+roi_w, y0+roi_h)
 
 
 def extract_image_roi(image, roi, padding_fraction, square=False, return_offset = False):
@@ -241,8 +243,7 @@ def rotation_conversion_from_hell(pitch, yaw, roll):
     rot = Rotation.from_euler('XYZ', [pitch,-yaw,roll])
     M = rot.as_matrix()
     x, y, z = M
-    M = np.array([z, -y, -x])
-    x, y, z = M.T
+    x, y, z = np.array([z, -y, -x]).T
     M = np.array([z, -y, -x]).T
     rot = Rotation.from_matrix(M)
     # Now at zero rotation, we have the local X/forward 
@@ -273,18 +274,22 @@ def _load_shape_components():
     return keypts, w_shp, w_exp
 
 
+def get_3ddfa_shape_parameters(params):
+    """ Modified for a subset of rescaled shape vectors. 
+        Also restricted to the first 40 and 10 parameters, respectively."""
+    f_shp = params['Shape_Para'][:40,0]/20./1.e5
+    f_exp = params['Exp_Para'][:10,0]/5.
+    return f_shp, f_exp
+
+
 def compute_keypoints_from_3ddfa_shape_params(params, head_size, rotation, tx, ty):
-    #offset_my_mangled_shape_data = np.array([[-0.9, -0.26, 0.]])
-    f_shp = params['Shape_Para'][:,0]/20./1.e5
-    f_exp = params['Exp_Para'][:,0]/5.
+    f_shp, f_exp = get_3ddfa_shape_parameters(params)
     keypts, w_shp, w_exp = _load_shape_components()
     pts3d = keypts + \
         np.sum(f_shp[:40,None,None]*w_shp, axis=0) + \
         np.sum(f_exp[:10,None,None]*w_exp, axis=0)
-    #pts3d -= offset_my_mangled_shape_data
     pts3d *= head_size     
     pts3d = rotation.apply(pts3d)
-    # world to screen transform:
     pts3d = pts3d[:,[2,1,0]]
     pts3d = pts3d.T
     pts3d[0] *= -1
@@ -340,3 +345,25 @@ def extended_key_points_for_bounding_box(keypts):
     pt4 = pt1 + length_back_scale*np.linalg.norm(radius)*back
     extended_keypts = np.concatenate([keypts, pt1[None,...], pt2[None, ...], pt3[None, ...], pt4[None, ...]], axis=0)
     return extended_keypts
+
+
+def labels_to_lists(labels):
+    items_sorted_by_clusters = np.argsort(labels)
+    
+    _, counts = np.unique(labels[items_sorted_by_clusters], return_counts=True)
+    cluster_starts = np.cumsum(np.hstack([[0],counts]))
+    
+    return [
+        items_sorted_by_clusters[a:b] for (a,b) in zip(cluster_starts[:-1],cluster_starts[1:])
+    ]
+
+
+if __name__ == '__main__':
+    import utils
+    for i in range(100):
+        rot = Rotation.random()
+        p,y,r = utils.inv_rotation_conversion_from_hell(rot)
+        res = rotation_conversion_from_hell(p,y,r)
+        print (rot.as_rotvec(), res.as_rotvec())
+        assert np.all(np.isclose(rot.as_rotvec(),res.as_rotvec()))
+        

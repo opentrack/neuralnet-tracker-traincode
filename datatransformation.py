@@ -15,9 +15,23 @@ import functools
 import torch
 from torch.utils.data import Dataset, DataLoader, Subset, IterableDataset, get_worker_info
 import torch.nn.functional
+import torchvision.transforms
 
 import utils
 import datasets.preprocessing as preprocessing
+
+
+class TransformedDataset(Dataset):
+    def __init__(self, wrapped, transform):
+        super(TransformedDataset, self).__init__()
+        self.transform = transform
+        self.wrapped = wrapped
+    
+    def __len__(self):
+        return len(self.wrapped)
+
+    def __getitem__(self, key):
+        return self.transform(self.wrapped[key])
 
 
 class PostprocessingDataLoader(DataLoader):
@@ -27,7 +41,7 @@ class PostprocessingDataLoader(DataLoader):
     
     def __iter__(self):
         for item in super(PostprocessingDataLoader, self).__iter__():
-            yield self.postprocess(item)
+            yield self.postprocess(item) if self.postprocess is not None else item
 
 
 def _maybe_apply(fun):
@@ -99,14 +113,24 @@ class ApplyRoiRandomized(object):
         roi_w = roi[2]-roi[0]
         roi_h = roi[3]-roi[1]
 
-        scale = np.random.uniform(-0.05, 0.4)
+        if 0:
+            scale = np.random.uniform(-0.05, 0.2)
+        else:
+            scale = np.random.uniform(-0., 0.25)
         scaled_roi = preprocessing.extend_rect(roi, w, h, scale, 0.)
         scaled_roi = np.array(preprocessing.squarize_roi(scaled_roi))
         scaled_roi_w = scaled_roi[2]-scaled_roi[0]
         scaled_roi_h = scaled_roi[3]-scaled_roi[1]
 
-        woffset = max(0, scaled_roi_w-roi_w)/2
-        hoffset = max(0, scaled_roi_h-roi_h)/2
+        if 0:
+            # This keeps the original roi in the view completely. If it  fills the view, it cannot move at all.
+            # This might note be sufficient augmentation for the attention-based model since it would see mostly
+            # centered faces.
+            woffset = max(0, scaled_roi_w-roi_w)/2
+            hoffset = max(0, scaled_roi_h-roi_h)/2
+        else:
+            woffset = roi_w/2
+            hoffset = roi_h/2
 
         scaled_roi[[0,2]] += np.random.uniform(-woffset,woffset)
         scaled_roi[[1,3]] += np.random.uniform(-hoffset,hoffset)
@@ -118,6 +142,87 @@ class ApplyRoiRandomized(object):
         maybe_transform_point_data(sample, 'pt3d_68', o, s)
         maybe_transform_point_data(sample, 'pt2d_68', o, s)
         maybe_transform_box_data(sample, 'roi', o, s)
+        return sample
+
+
+class PutRoiFromLandmarks(object):
+    def __call__(self, sample):
+        if 'pt3d_68' in sample:
+            landmarks3d = sample['pt3d_68']
+            min_ = np.amin(landmarks3d[:2], axis=1)
+            max_ = np.amax(landmarks3d[:2], axis=1)
+            sample['roi'] = np.concatenate([min_, max_], axis=0).astype(int)
+        return sample
+
+
+class InPlaneRotation(object):
+    supported_data = frozenset('image pt3d_68 roi roi_head pose coord hasface_enable hasface pose_enable pt3d_68_enable shapeparam'.split())
+    
+    def __init__(self, amounts = [ 30, 60 ], p = [0.2, 0.1]):
+        self.amounts = amounts
+        self.probs = p
+
+    def determine_amount(self):
+        a = self.amounts + [ 0 ]
+        p = self.probs + [ 1.-np.sum(self.probs) ]
+        return np.random.choice(a, size=1, p=p)
+    
+    def transform_points(self, A, pts):
+        coord_translate = pts[:,:2]
+        coord_translate = np.concatenate([coord_translate, np.ones((coord_translate.shape[0],1))], axis=-1)
+        coord_translate = np.matmul(A[None,:,:], coord_translate[...,None])[...,0]
+        return np.concatenate([coord_translate[:,:2], pts[:,2:]],axis=-1)
+        
+    def __call__(self, sample):
+        angle, = self.determine_amount()
+        if not angle:
+            return sample
+        angle *= np.pi/180.
+        if np.random.randint(2):
+            angle = -angle
+        
+        assert all(k in self.supported_data for k in sample.keys()), f"Unsupported data: {frozenset(sample.keys()) - self.supported_data}"
+        
+        img = sample['image']
+        h, w = img.shape[:2]
+        
+        t = h//2, w//2
+        T = np.float32([
+            [ 1, 0, t[0] ],
+            [ 0, 1, t[1] ],
+            [ 0, 0, 1    ]
+        ])
+        R = np.float32([
+            [np.cos(angle),np.sin(angle),0],
+            [-np.sin(angle),np.cos(angle),0],
+            [0, 0, 1]
+        ])
+        A = np.dot(T, np.dot(R, np.linalg.inv(T)))
+        avg_color = tuple(map(int,np.average(sample['image'],axis=(0,1))))
+        sample['image'] = cv2.warpAffine(img,A[:2,:],(w,h), borderValue=avg_color)
+        if 'pose' in sample:
+            sample['pose'] = Rotation.from_rotvec([ angle, 0., 0. ])*sample['pose']
+            new_coord = self.transform_points(A, sample['coord'][None,:])[0]
+            coord_delta = new_coord - sample['coord']
+            sample['coord'] = new_coord
+        if 'pt3d_68' in sample:
+            landmarks3d = self.transform_points(A, sample['pt3d_68'].T).T
+            sample['pt3d_68'] = landmarks3d
+        if 'pt2d_68' in sample:
+            sample['pt2d_68'] = self.transform_points(A, sample['pt2d_68'].T).T
+        if 'roi' in sample:
+            if 'pt3d_68' in sample:
+                min_ = np.amin(landmarks3d[:2], axis=1)
+                max_ = np.amax(landmarks3d[:2], axis=1)
+                sample['roi'] = np.concatenate([min_, max_], axis=0).astype(np.float32)
+            else:
+                assert False, "Not implemented!"
+        if 'roi_head' in sample:
+            # Poorly made ... just move the bounding box by the translation vector by that the head center moved.
+            roi = sample['roi_head'].copy()
+            roi[:2] += coord_delta[:2]
+            roi[2:] += coord_delta[:2]
+            sample['roi_head'] = roi
         return sample
 
 
@@ -200,8 +305,15 @@ class RandomCrop(object):
         h, w = sample['image'].shape[:2]
         new_h, new_w = self.output_size
 
-        top = np.random.randint(0, h - new_h)
-        left = np.random.randint(0, w - new_w)
+        if h < new_h or w < new_w:
+            img = sample['image']
+            new_img = np.zeros((max(new_h,h), (max(w,new_w)))+(img.shape[2:]), dtype=img.dtype)
+            new_img[:h,:w] = img
+            sample['image'] = new_img
+            del img, new_img
+
+        top = np.random.randint(0, h - new_h) if h>new_h else 0
+        left = np.random.randint(0, w - new_w) if w>new_w else 0
 
         sample['image'] = sample['image'][top: top + new_h,
                       left: left + new_w,...]
@@ -338,6 +450,7 @@ def faceboxes_style_color_distortion(image):
 
 
 def blur_distortion(image):
+    noise_levels = np.array([ 16, 8, 0])
     if isinstance(image, np.ndarray):
         assert len(image.shape)==3 # Single sample
 
@@ -346,7 +459,7 @@ def blur_distortion(image):
         if np.random.randint(2):
             image[...] = cv2.GaussianBlur(image,(3,3),0)
 
-        stddev = np.random.choice([16., 8., 0.])
+        stddev = np.random.choice(noise_levels)
         if stddev > 0.:
             image[...] = np.clip(image + np.random.normal(0, stddev, size=image.shape, ), 0., 255.9999).astype(np.uint8)
 
@@ -367,7 +480,7 @@ def blur_distortion(image):
             for i in range(B):
                 if np.random.randint(2):
                     image[i:i+1] = torch.nn.functional.conv2d(image[i:i+1], kernel, bias=None, padding=1, groups=C)
-                stddev = np.random.choice([16./255, 8./255, 0.])
+                stddev = np.random.choice(noise_levels)/255.
                 if stddev>0:
                     noise.normal_(0., stddev)
                     image[i] += noise
@@ -412,13 +525,33 @@ class AdaptiveBrightnessContrastDistortion(object):
         else:
             crop = img
         crop = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
-        a, b = np.quantile(crop.ravel(), [0.2, 0.8])
-
-        scale = np.random.uniform(min(1.,32./(a+1.e-6)), 255./(b+1))
-        img = scale*img
+        a, b = np.quantile(crop.ravel(), [0.1, 0.9])
         
+        if a>=b:
+            return sample
+
+        assert a<b, f"{a}, {b}"
+        img = (img-a)/(b-a)
+        while True:
+            new_a = np.random.uniform(-0.1, 1.1)
+            new_b = np.random.uniform(-0.1, 1.1)
+            if new_b < new_a:
+                new_a, new_b = new_b, new_a
+            if new_b - new_a > 128./255.:
+                break
+        img = (new_a*255.) + img*(new_b-new_a)*255.
         sample['image'] = np.clip(img, 0, 255).astype(np.uint8)
         
+        return sample
+
+
+class RandomErasing(object):
+    def __init__(self):
+        self.tr = torchvision.transforms.RandomErasing()
+    def __call__(self, sample):
+        sample = copy(sample)
+        for i, img in enumerate(sample['image']): 
+            sample['image'][i,...] = self.tr(img)
         return sample
 
 
@@ -442,6 +575,17 @@ class Normalize(object):
         image=  image/255.0 - 0.5
         sample['image'] = image.astype(np.float32)
 
+        if 'pose' in sample and ('pose_enable' in sample or 'pt3d_68_enable' in sample):
+            if sample['pose'].magnitude()*utils.rad2deg > 90:
+                try:
+                    sample['pose_enable']*=0.1
+                except KeyError:
+                    pass
+                try:
+                    sample['pt3d_68_enable']*=0.1
+                except KeyError:
+                    pass
+
         try:
             sample['pose'] = utils.convert_from_rot(sample['pose'])
         except KeyError:
@@ -458,6 +602,7 @@ class Normalize(object):
         maybe_normalize_point_data(sample, 'pt3d_68', shape)
         maybe_normalize_point_data(sample, 'pt2d_68', shape)
         maybe_normalize_box_data(sample, 'roi', shape)
+        maybe_normalize_box_data(sample, 'roi_head', shape)
 
         return sample
 
@@ -472,14 +617,24 @@ class ToTensor(object):
         img = np.transpose(img, [2, 0, 1])
         return torch.from_numpy(img)
 
+    def _fix_type(self, data):
+        if data.dtype == torch.float64:
+            data = data.to(torch.float32)
+        return data
+
     def _do_other(self, data):
         return torch.from_numpy(data)
 
-    def __call__(self, sample):
-        sample = { k:(self._do_image(v) if k == 'image' else self._do_other(v))
-            for k, v in sample.items() }
-        return sample
+    def _do_item(self, k, v):
+        return self._fix_type(
+            self._do_image(v) if k == 'image' else self._do_other(v))
 
+    def __call__(self, sample):
+        return { k:self._do_item(k, v) for k, v in sample.items() }
+
+class MoveToGpu(object):
+    def __call__(self, sample):
+        return { k:v.cuda() for k, v in sample.items() }
 
 class InjectZeroKeypoints3d(object):
     def __init__(self, dim=3):
@@ -496,7 +651,22 @@ class InjectZeroPose(object):
             'pose' : Rotation.identity(),
             'coord' : np.array([0.,0.,0.,], dtype=np.float32),
             'pose_enable' : np.array(0.,dtype=np.float32),
+            #'shapeparam' : np.zeros(50, dtype=np.float32)
         })
+        return sample
+
+
+class InjectHasFaceTrue(object):
+    def __call__(self, sample):
+        sample['hasface'] = True
+        return sample
+
+
+class InjectHasFaceEnable(object):
+    def __init__(self, value):
+        self.value = value
+    def __call__(self, sample):
+        sample['hasface_enable'] = np.array(self.value, dtype=np.float32)
         return sample
 
 
@@ -510,3 +680,28 @@ class InjectPt3d68Enable(object):
     def __call__(self, sample):
         sample['pt3d_68_enable'] = np.array(1., dtype=np.float32)
         return sample
+
+
+class InjectZeroFullHeadBox(object):
+    def __call__(self, sample):
+        sample['roi_head'] = np.zeros((4,), dtype=np.float32)
+        return sample
+
+
+class DeleteKeys(object):
+    def __init__(self, *keys):
+        self.keys = keys
+
+    def __call__(self, sample):
+        for k in self.keys:
+            del sample[k]
+        return sample
+
+
+class SplitImageFromTargets(object):
+    '''
+        return (x, y_target), where x is sample['image']
+    '''
+    def __call__(self, sample):
+        img = sample.pop('image')
+        return img, sample

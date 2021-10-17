@@ -23,7 +23,7 @@ def generate_samples(shuffle, subset, num_workers, batch_size):
     return [ tuple(item.numpy()) for batch in train_loader for item in batch ]
 
 
-if __name__ == '__main__':
+def test_hdf5_dataset():
     items = generate_samples(False, None, 3, 2)
     assert len(items) == len(set(items)) # All unique
     print ("----- shuffled -------")
