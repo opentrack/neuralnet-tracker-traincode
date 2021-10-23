@@ -1,0 +1,6 @@
+Debug
+.vs
+*.vcxproj.filters
+*.vcxproj.user
+test.onnx
+speed_test
