@@ -1,76 +1,67 @@
 Intro
 =====
 
-This project contains the code to train the neural nets for my opentrack head tracker. The home page of the opentrack project is https://github.com/opentrack/opentrack.
+This project contains the code to train the neural nets for [Opentrack](https://github.com/opentrack/opentrack)'s neuralnet-tracker. This tracking component performs localization and 6d pose estimation of the user's face in Opentrack's webcam feed.
 
-There are two parts. A localizer network which computes a bounding box around the users head in the webcam video feed, typically.
-
-And the second part is the actual pose network which looks at a region of interest around the head, i.e. the previously computed bounding box, and outputs the following:
-* a quaternion representing the orientation
+There are two networks. There is one for localization which computes a bounding box around the users head, and a second one which performs the pose prediction. The latter looks at a region of interest around the head, i.e. the previously computed bounding box, and outputs the following:
+* a quaternion representing the orientation,
 * x, y coordinates in screen space,
 * head radius in screen space,
-* facial key points, which are used as additional training objective,
-* a new bounding box for the head. Currently is trained to return the bounding box of the key points.
+* facial key points, which are used as auxiliary training objective,
+* a new bounding box. This enables tracking without the localization component.
 
-It is pretty straight forward, except maybe the key points. I loosly follow the approach from https://github.com/cleardusk/3DDFA_V2, where key points are literally specific vertices taken from a deformable face model. The convolutional backbone outputs parameters for the deformable model. In computer graphics this is sometimes called "blend shapes" since some deformation vectors are superimposed by linear combination.
+It is pretty straight forward, except maybe the key points. I loosely follow the approach from https://github.com/cleardusk/3DDFA_V2. Therein key points, a.k.a. landmarks, are taken from a deformable 3d face model. The convolutional backbone outputs blend weights for this face model.
 
-Regarding localization, I use the Wider Face dataset which is for general face detection. My network only supports localization of a single object, I do execessive processing to generate pairs of images with exactly one and no face, respectively.
+Regarding localization, I train on the WIDER FACE dataset which is for general face detection. For Opentrack, localization of a single face is sufficient, so no full detection is done. The data set is processed in a way that a balance set of positive and negative examples is created.
 
 Datasets
 ========
 
-Several datasets are used. All of which are preprocessed and the result stored in h5 files.
+Training is performed on the following data sets. They are pre-processed into hdf5 files, applying additional transformations such as coordinate system changes, cropping and rescaling.
 
 * AFLW2000-3d & 300W-LP
 http://www.cbsr.ia.ac.cn/users/xiangyuzhu/projects/3DDFA/main.htm
-Generated with 3D Dense Face Alignment (3DDFA) to fit a morphable 3Dmodel to 2D input images and provide accurate head poses as ground-truth. 300W-LP additionally generates synthetic views, greatly expanding the number of images.
+These datasets provide face images labeled with 6d poses and parameters for said deformable face model. 300W-LP additionally provides synthetic views, greatly expanding the number of images.
 
 * Kaggle YT Face videos
 https://www.kaggle.com/selfishgene/youtube-faces-with-facial-keypoints
-3d keypoints fitted with neural network. Some manual cleaning. Noisy, but still helps, I guess. No pose data unfortunately, so can only use keypoints as training target.
+Provides 3D key point annotations for the YT faces dataset, created with the [FAN of Bulat et al.](https://github.com/1adrianb/face-alignment). It required filtering of bad fits.
 
 * WIDER FACE
 http://shuoyang1213.me/WIDERFACE/index.html
-For face detection.
+For face detection. Provides bounding box annotations for a wide variety of images.
 
 Usage
 =====
 
-There is not proper packaging yet. Therefore the project dir should be added to the python search path. The Anaconda environment
-and package manager is highly recommended. Assuming you have that, and work under Linux, you can get started by
+There is no proper packaging yet. Therefore the project dir should be added to the python search path. The Anaconda environment and package manager is highly recommended. Assuming you have that, and work under Linux, and the dependencies are installed, you can get started by
 ```bash
 cd dir/with/tracker-traincode
 ```
 ```bash
-conda activate ml   # Activate your anaconda env
-export PYTHONPATH=`pwd`  # Set pythonpath so search in current work dir
-export DATADIR=dir/with/data/files # Scripts look there by default
+export PYTHONPATH=`pwd`  # Set python search path
+export DATADIR=dir/with/data/files # our notebooks read this environment variable when looking for data sets
 ```
 
-Regarding the datasets. Download them. Then run the conversion scripts. A script like the following is recommended.
+Regarding the datasets. Download them. Then run the conversion scripts.
 ```bash
-#!/bin/bash
 # Use -n <number> to limit the number of data points for faster development and testing
-# python scripts/dsbiwi_processing.py      $@ $DATADIR/biwi.zip $DATADIR/biwi.h5 # Don't really need this ...
 python scripts/dsaflw2k_processing.py    $@ $DATADIR/AFLW2000-3D.zip $DATADIR/aflw2k.h5
 python scripts/ds300wlp_processing.py    $@ $DATADIR/300W-LP.zip $DATADIR/300wlp.h5
 python scripts/dsytfaces_processing.py   $@ $DATADIR/YTFaces $DATADIR/ytfaces.h5
 python scripts/dswiderface_processing.py $@ $DATADIR/wider_faces $DATADIR/widerfacessingle.h5
 ```
 
-Check the data with the help of the notebook `DataVisualization.ipynb`.
+The script folder further contains notebooks for training and other tasks. Check the data with the help of  `DataVisualization.ipynb`. Run training in the notebooks `TrainLocalizer.ipynb` and `TrainKeypoints.ipynb`. The result can be inspected with `LocalizerEvaluation.ipynb` and `PoseNetworkEvaluation.ipynb`.
 
-Run training in the notebooks `TrainLocalizer.ipynb` and `TrainKeypoints.ipynb`.
-
-The result can be inspected with `LocalizerEvaluation.ipynb` and `PoseNetworkEvaluation.ipynb`.
-
-Afterwards the networks must be converted to the ONNX format. ONNX is Microsofts storage format which happens to be supported by a relatively lightweight runtime of the same name, allowing inference on the CPU. To carry out this conversion there is `export_model_onnx.py` in the scripts folder together with all the other stuff.
+Afterwards, the networks must be converted to the ONNX format. ONNX is Microsofts storage format which is supported by a relatively lightweight runtime of the same name, allowing inference on the CPU. To carry out this conversion there is `export_model_onnx.py` in the scripts folder.
 
 Dependencies
 ============
 ```
 Python, PyTorch, Jupyter, OpenCV, SciPy, H5py, Progressbar2, ONNX
 ```
+
 Miscellaneous
 =============
 
@@ -81,60 +72,59 @@ It is common in the head-pose estimation literature to compare yaw, pitch and ro
 
 There are two recent works which can be taken for reference:
 
-*[1] Albiero et al. (2021) "img2pose: Face Alignment and Detection via 6DoF, Face Pose Estimation"*
-*[2] Hsu et al. (2018) "Quatnet: Quaternion-based head pose estimation with multiregression loss"*
+* *[1] Albiero et al. (2021) "img2pose: Face Alignment and Detection via 6DoF, Face Pose Estimation"*
+
+* *[2] Hsu et al. (2018) "Quatnet: Quaternion-based head pose estimation with multiregression loss"*
 
 And also 3DDFA_V2 with the limitation that I have to measure the angle errors myself.
 
-*[3] Guo et al. (2020) "Towards Fast, Accurate and Stable 3D Dense Face Alignment"*
+* *[3] Guo et al. (2020) "Towards Fast, Accurate and Stable 3D Dense Face Alignment"*
 
-The following table shows results for the popular AFLW 2000 3D benchmark:
+The following table shows the MAE in degrees for the popular AFLW 2000 3D benchmark:
 
 | Method            | Yaw   | Pitch | Roll  | Average |
 |-------------------|-------|-------|-------|---------|
-| img2pose [1]         | 3.4** | **5.034** | **3.278** | **3.913** |
+| img2pose [1]         | 3.4 | **5.034** | **3.278** | **3.913** |
 | QuatNet [2]          | 3.973 | 5.615 | 3.920 | 4.503   |
+| (3DDFA_V2 [3] \*\*\*) | **3.183** | 5.227 | 3.468 | 3.959   |
 | **NN-Tracker \*** | 3.373 | 5.206 | 3.545 | 4.041 |
 | **NN-Tracker \*\*** | 3.370 | 5.761 | 3.607 | 4.246 |
-| (3DDFA_V2 [3] \*\*\*) | **3.183** | 5.227 | 3.468 | 3.959   |
 
 \* Inputs cropped to ground-truth face bounding boxes. This is what the network has been trained on.
-\*\* Inputs cropped to centers. Center cropping has been reported in [2] but I found no details. So I just picked a fixed percentage that looked good. I did *not* optimize the cropped section for best results!
-\*\*\* *According to my own measurement.* Using bounding boxes of ground truth landmark annotations. See [3DDFA_V2 evaluation notebook](https://github.com/DaWelter/3DDFA_V2/blob/master/AFLW20003dEvaluation.ipynb).
 
-3DDFA_V2 relies on bounding boxes from the FaceBoxes detector. This detector failed on a few images. When the input boxes are taken from the detector, excluding failures, the performace dropped to an average MAE of 4.010°.
+\*\* Inputs cropped to centers. Center cropping has been reported in [2] but I found no details. So I just picked a fixed percentage that looked good. I did *not* optimize the cropped section for best results!
+
+\*\*\* *According to my own measurement.* Cropping to bounding boxes of ground truth landmark annotations. See [3DDFA_V2 evaluation notebook](https://github.com/DaWelter/3DDFA_V2/blob/master/AFLW20003dEvaluation.ipynb).
+
+3DDFA_V2 relies on bounding boxes from the FaceBoxes detector. This detector failed on a few images. When the input boxes are taken from the detector, excluding failures, the performance dropped to an average MAE of 4.010°.
 
 The values for QuatNet and img2pose are taken from [1]. The values for NN-Tracker were generated with the training code for the first release with [opentrack 2021.1.2](https://github.com/opentrack/opentrack/releases/tag/opentrack-2021.1.2). For this comparison, I retrained a network, not training on AFLW 2000 3D since I was using it as test set. See [training notebook in feature branch](https://github.com/opentrack/neuralnet-tracker-traincode/blob/proper-measurement/scripts/TrainKeypoints.ipynb) and [evaluation notebook](https://github.com/opentrack/neuralnet-tracker-traincode/blob/proper-measurement/scripts/AFLW20003dEvaluation.ipynb)
 
-Head coordinate frame
----------------------
-X is forward from the viewpoint of the faces. Y is up. Z is right. Granted, my choice is a bit awkward ... but tbh I'm happy I got it working at all.
+Coordinate systems
+------------------
 
-When viewed from the front, the face has identity rotation, meaning its local axes are aligned with the world axes.
+In the world frame, X is forward from the point of view of the faces, pointing toward the camera. Y is up. Z is right. When viewed from the front, the face has identity rotation, meaning its local axes are aligned with the world axes.
 
-Camera space is different. Here X is right, Y is down and Z is out of the screen (I think). So, to get from world space to camera or image space there is an additional transformation.
+The camera is considered fixed. In camera space, X is right, Y is down and Z is out of the screen. So, to get from world space to camera or image space, a respective transformation must be taken into account.
 
-I should probably fix it so it's all the same.
+In future this should be simplified.
 
 OpenCV Performance
 ------------------
 
-The OpenCV from Conda Forge run extremely slowly. Turns out it is better if you force it to use only one thread. Hence.
+The OpenCV from Conda Forge run extremely slowly. Turns out it is better to force it to use only one thread. Hence the occasional lines
 ```
 import cv2
 cv2.setNumThreads(1)
 ```
-
-Before I tried that I made the ugly hack with image augmentation on the GPU using the PostprocessingDataLoader in datatransformation.py with which I can run stuff on the gpu after a batch was assembled. Running cuda code on the worker processes is unfortunately not possible so an extra processing step has to take place.
-
-See also
+The issue has been reported before. See there:
 https://github.com/ContinuumIO/anaconda-issues/issues/10041
 https://github.com/opencv/opencv/issues/11107#issuecomment-393475735
 
 Licensing
 =========
 
-This software, that is everything not covered by other licenses is published under the ISC license.
+This software, I.e, everything not covered by other licenses is published under the ISC license.
 
 Copyright 2021 Michael Welter
 
