@@ -1,0 +1,3 @@
+[submodule "trackertraincode/gmm-torch"]
+	path = trackertraincode/gmm_torch
+	url = https://github.com/ldeecke/gmm-torch.git

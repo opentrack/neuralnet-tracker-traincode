@@ -1,0 +1,14 @@
+h5py
+numpy
+scipy
+pytorch
+trimesh
+pyrender
+opencv
+kornia
+pillow
+torchvision
+pytorch-minimize
+pytorch3d
+facenet-pytorch
+tabulate

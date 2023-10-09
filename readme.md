@@ -25,92 +25,72 @@ Several datasets are used. All of which are preprocessed and the result stored i
 http://www.cbsr.ia.ac.cn/users/xiangyuzhu/projects/3DDFA/main.htm
 Generated with 3D Dense Face Alignment (3DDFA) to fit a morphable 3Dmodel to 2D input images and provide accurate head poses as ground-truth. 300W-LP additionally generates synthetic views, greatly expanding the number of images.
 
-* Kaggle YT Face videos
-https://www.kaggle.com/selfishgene/youtube-faces-with-facial-keypoints
-3d keypoints fitted with neural network. Some manual cleaning. Noisy, but still helps, I guess. No pose data unfortunately, so can only use keypoints as training target.
-
 * WIDER FACE
 http://shuoyang1213.me/WIDERFACE/index.html
 For face detection.
 
-* BIWI
-Pose annotations were created from the depth information using a template based approach. Has video sequences. No key points. Different location of the head coordinate frame, so cannot yet be used for training. Might take the approach from Kaggle YT Face videos to add keypoint for training targets.
+* WFLW large pose augmented
+TODO
+
+* LAPA large pose augmented
+TODO
 
 Usage
 =====
 
-There is not proper packaging yet. Therefore the project dir should be added to the python search path. The Anaconda environment
-and package manager is highly recommended. Assuming you have that, and work under Linux, you can get started by
-```bash
-cd dir/with/tracker-traincode
-```
-```bash
-conda activate ml   # Activate your anaconda env
-export PYTHONPATH=`pwd`  # Set pythonpath so search in current work dir
-export DATADIR=dir/with/data/files # Scripts look there by default
-```
+TODO: pip installable
 
-Regarding the datasets. Download them. Then run the conversion scripts. A script like the following is recommended.
+Data preparation
+----------------
+
+Regarding the datasets. Download them. Then run the conversion scripts.
+
 ```bash
-#!/bin/bash
 # Use -n <number> to limit the number of data points for faster development and testing
-# python scripts/dsbiwi_processing.py      $@ $DATADIR/biwi.zip $DATADIR/biwi.h5 # Don't really need this ...
+# For training the localizer network
+python scripts/dswiderface_processing.py $@ $DATADIR/wider_faces $DATADIR/widerfacessingle.h5
+# For training the pose estimator
 python scripts/dsaflw2k_processing.py    $@ $DATADIR/AFLW2000-3D.zip $DATADIR/aflw2k.h5
 python scripts/ds300wlp_processing.py    $@ $DATADIR/300W-LP.zip $DATADIR/300wlp.h5
-python scripts/dsytfaces_processing.py   $@ $DATADIR/YTFaces $DATADIR/ytfaces.h5
-python scripts/dswiderface_processing.py $@ $DATADIR/wider_faces $DATADIR/widerfacessingle.h5
-python scripts/fitkeypoints.py $DATADIR/ytfaces.h5
 ```
+TODO finish
 
 Check the data with the help of the notebook `DataVisualization.ipynb`.
 
-Run training in the notebooks `TrainLocalizer.ipynb` and `TrainKeypoints.ipynb`.
+Training the localizer network
+------------------------------
 
-The result can be inspected with `LocalizerEvaluation.ipynb` and `PoseNetworkEvaluation.ipynb`.
+Run training in the notebooks `TrainLocalizer.ipynb`.
+The result can be inspected with `LocalizerEvaluation.ipynb`
 
-Afterwards the networks must be converted to the ONNX format. ONNX is Microsofts storage format which happens to be supported by a relatively lightweight runtime of the same name, allowing inference on the CPU. To carry out this conversion there is `export_model_onnx.py` in the scripts folder together with all the other stuff.
+Afterwards the networks must be converted to the ONNX format. To carry out this conversion there
+ is `export_model_onnx.py` in the scripts folder together with all the other stuff.
+
+Training the pose estimation network
+------------------------------------
+
+TODO: `scripts/train_poseestimator.py`
+
+```bash
+python scripts/train_poseestimator.py --lr 1.e-3 --epochs 1500 --ds "repro_300_wlp+synface+lapa_megaface_lp+wflw_lp" --auglevel 2 \
+    --save-plot train.pdf \
+    --with-swa \
+    --backbone mobilenetv1
+```
+
 
 Dependencies
 ============
 ```
-Python, PyTorch, Jupyter, OpenCV, SciPy, H5py, Progressbar2, ONNX
+Python, PyTorch, Jupyter, OpenCV, SciPy, H5py, tqdm, ONNX
 ```
 Miscellaneous
 =============
 
 Head coordinate frame
 ---------------------
-X is forward from the viewpoint of the faces. Y is up. Z is right. Granted, my choice is a bit awkward ... but tbh I'm happy I got it working at all.
 
-When viewed from the front, the face has identity rotation, meaning its local axes are aligned with the world axes.
-
-Camera space is different. Here X is right, Y is down and Z is out of the screen (I think). So, to get from world space to camera or image space there is an additional transformation.
-
-I should probably fix it so it's all the same.
-
-OpenCV Performance
-------------------
-
-The OpenCV from Conda Forge run extremely slowly. Turns out it is better if you force it to use only one thread. Hence.
-```
-import cv2
-cv2.setNumThreads(1)
-```
-
-Before I tried that I made the ugly hack with image augmentation on the GPU using the PostprocessingDataLoader in datatransformation.py with which I can run stuff on the gpu after a batch was assembled. Running cuda code on the worker processes is unfortunately not possible so an extra processing step has to take place.
-
-See also
-https://github.com/ContinuumIO/anaconda-issues/issues/10041
-https://github.com/opencv/opencv/issues/11107#issuecomment-393475735
-
-
-Tests
------
-There is no intention to have really good test and good coverage. However there
-are a few tests in the test folder. Mostly they make sure that the code runs
-without crashing.
-
-Simply executing `pytest` in the test folder should be enough to run all tests.
+X is right, Y is down and Z is into the screen.
 
 
 Licensing
@@ -162,7 +142,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-Datasets
---------
-TODO
