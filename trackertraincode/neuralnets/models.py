@@ -233,7 +233,7 @@ class NetworkWithPointHead(nn.Module):
 
         self.convnet = create_pose_estimator_backbone(config)
         num_features = self.convnet.num_features
-        self.dropout = nn.Dropout(0.1)
+        self.dropout = nn.Dropout(0.5)
 
         self.boxnet = BoundingBox(num_features, enable_uncertainty)
         self.posnet = PositionSizeOutput(num_features, enable_uncertainty)

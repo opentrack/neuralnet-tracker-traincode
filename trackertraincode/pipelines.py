@@ -309,7 +309,6 @@ def make_pose_estimation_loaders(inputsize, batchsize, datasets : Sequence[Id], 
     image_augs = [
         dtr.RandomEqualize(p=0.2),
         dtr.RandomPosterize((4.,6.), p=0.01),
-        dtr.RandomInvert(p=0.1),
         dtr.RandomGamma((0.5, 2.0), p = 0.2),
         dtr.RandomContrast((0.7, 1.5), p = 0.2),
         dtr.RandomBrightness((0.7, 1.5), p = 0.2),
@@ -317,13 +316,17 @@ def make_pose_estimation_loaders(inputsize, batchsize, datasets : Sequence[Id], 
     if auglevel in  (2, 1, 3):
         image_augs += [
             dtr.RandomGaussianBlur(p=0.1, kernel_size=(5,5), sigma=(1.5,1.5)),
-            dtr.RandomGaussianNoiseWithClipping(std=4./255., p=0.1)
+            #dtr.RandomGaussianNoiseWithClipping(std=4./255., p=0.1)
         ]
 
     loader_trafo_train = [
         partial(dtr.normalize_batch, align_corners=False),
         partial(dtr.to_device, 'cuda'),
         dtr.KorniaImageDistortions(*image_augs, random_apply = 4),
+        dtr.KorniaImageDistortions(
+            dtr.RandomGaussianNoise(std=4./255., p=0.5),
+            dtr.RandomGaussianNoise(std=16./255., p=0.1),
+        ),
         whiten_batch
     ]
 

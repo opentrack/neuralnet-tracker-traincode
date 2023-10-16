@@ -17,6 +17,7 @@ from trackertraincode.datatransformation.imageaugment import (
     RandomGaussianNoiseWithClipping,
     RandomContrast,
     RandomBrightness,
+    RandomGaussianNoise
 )
 
 from trackertraincode.datatransformation.loader import (

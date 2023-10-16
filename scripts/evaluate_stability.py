@@ -6,10 +6,13 @@ import argparse
 import tqdm
 from typing import NamedTuple, Optional, List, Tuple
 from scipy.spatial.transform import Rotation
+import tabulate
 from matplotlib import pyplot
 import itertools
 from collections import defaultdict
 import torch
+from torchvision.transforms import Compose
+from trackertraincode.neuralnets.torchquaternion import quat_average, geodesicdistance
 
 from trackertraincode.datasets.batch import Batch
 import trackertraincode.datatransformation as dtr
@@ -247,6 +250,56 @@ def main_analyze_pitch_vs_yaw(checkpoints : List[str]):
     pyplot.show()
 
 
+def main_analyze_noise_resist(checkpoints : List[str]):
+    def noisify(img : torch.Tensor, noiselevel : float):
+        return (img+noiselevel*torch.randn_like(img, dtype=torch.float32)).clip(0., 255.).to(torch.uint8)
+
+    def predict_noisy_dataset(net, loader, noiselevel, predictions_to_keep, rounds = 10) -> Poses:
+        bar = tqdm.tqdm(total = len(loader.dataset))
+        def predict_sample_list(samples : List[Batch]):
+            rois = torch.stack([ s['roi'] for s in samples ])
+            outputs = defaultdict(list)
+            for _ in range(rounds):
+                images = [ noisify(s['image'], noiselevel) for s in samples ]
+                out = predict(net, images, rois, focus_roi_expansion_factor=1.1)
+                for k in predictions_to_keep:
+                    outputs[k].append(out[k])
+            preds_out = Batch(meta=out.meta, **{
+                k:torch.stack(v,dim=1) for k,v in outputs.items()
+            })
+            gt_outputs = { k:torch.stack([s[k] for s in samples]) for k in predictions_to_keep }
+            bar.update(len(samples))
+            return preds_out, gt_outputs
+        preds, gt = zip(*(predict_sample_list(batch) for batch in utils.iter_batched(loader,32)))
+        preds = utils.list_of_dicts_to_dict_of_lists(preds)
+        for k,v in preds.items():
+            preds[k] = torch.concat(v)
+        gt = utils.list_of_dicts_to_dict_of_lists(gt)
+        for k,v in gt.items():
+            gt[k] = torch.concat(v)
+        return preds, gt
+
+    def compute_metrics_for_quats(gt : torch.Tensor, preds : torch.Tensor):
+        preds = preds.swapaxes(0,1) # batch <-> noise sample
+        mean_preds = torch.from_numpy(quat_average(preds))
+        preds_spread = geodesicdistance(mean_preds[None,...], preds).square().mean(dim=0).sqrt().mean(dim=0)
+        preds_error  = geodesicdistance(mean_preds, gt).mean(dim=0)
+        return preds_error, preds_spread
+
+    loader = trackertraincode.pipelines.make_validation_loader('aflw2k3d', order = np.random.choice(1900,size=100))
+
+    rad2deg = 180./np.pi
+
+    for checkpoint in checkpoints:
+        net = load_pose_network(checkpoint, 'cuda')
+        table = [[ 'noise', 'err', 'spread' ]]
+        for noiselevel in [ 1., 8., 16., 32. ]:
+            preds, gt  = predict_noisy_dataset(net, loader, noiselevel, ('coord','pose','roi'))
+            err, spread = compute_metrics_for_quats(gt['pose'], preds['pose'])
+            table.append([noiselevel, err*rad2deg, spread*rad2deg])
+        print (f"Checkpoint: {checkpoint}")
+        print (tabulate.tabulate(table[1:], table[0]))
+
 if __name__ == '__main__':
     np.seterr(all='raise')
     parser = argparse.ArgumentParser(description="Trains the model")
@@ -254,8 +307,9 @@ if __name__ == '__main__':
     parser.add_argument('--closed-loop', action='store_true', default=False)
     parser.add_argument('--pitch-yaw', action='store_true', default=False)
     parser.add_argument('--open-loop', action='store_true', default=False)
+    parser.add_argument('--noise-resist', action='store_true', default=False)
     args = parser.parse_args()
-    if not (args.closed_loop or args.pitch_yaw):
+    if not (args.closed_loop or args.pitch_yaw or args.noise_resist):
         args.open_loop = True
     if args.open_loop:
         main_open_loop(args.filename, 'cuda')
@@ -263,3 +317,5 @@ if __name__ == '__main__':
         main_closed_loop(args.filename, 'cpu')
     if args.pitch_yaw:
         main_analyze_pitch_vs_yaw(args.filename)
+    if args.noise_resist:
+        main_analyze_noise_resist(args.filename)

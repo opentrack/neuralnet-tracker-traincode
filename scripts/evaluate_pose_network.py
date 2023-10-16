@@ -1,7 +1,12 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-from typing import Any, List
+# Seems to run a bit faster than with default settings and less bugged
+# See https://github.com/pytorch/pytorch/issues/67864
+import torch.multiprocessing
+torch.multiprocessing.set_sharing_strategy('file_system')
+
+from typing import Any, List, NamedTuple
 import numpy as np
 import argparse
 import tqdm
@@ -9,6 +14,8 @@ import tabulate
 from numpy.typing import NDArray
 from matplotlib import pyplot
 from os.path import basename
+import functools
+import torch
 
 from trackertraincode.datasets.batch import Batch
 import trackertraincode.datatransformation as dtr
@@ -19,15 +26,40 @@ import trackertraincode.utils as utils
 
 from trackertraincode.eval import load_pose_network, predict
 
+load_pose_network = functools.lru_cache(maxsize=1)(load_pose_network)
 
-def compute_predictions_and_targets(loader, net, keys):
+class RoiConfig(NamedTuple):
+    expansion_factor : float = 1.2
+    center_crop : bool = False
+
+    def __str__(self):
+        crop = ['ROI','CC'][self.center_crop]
+        return f'{crop}{self.expansion_factor:0.1f}'
+
+normal_roi_configs = [ RoiConfig() ]
+comprehensive_roi_configs = [ RoiConfig(*x) for x in [(1.2, False), (1.0, False), (0.6, True), (0.8, True) ] ]
+
+
+def determine_roi(batch : Batch, use_center_crop : bool):
+    if not use_center_crop:
+        return batch['roi']
+    w,h = batch.meta.image_wh
+    b = batch.meta.batchsize
+    return torch.tensor([0,0,h,w], dtype=torch.float32).expand((b,4))
+
+
+def compute_predictions_and_targets(loader, net, keys, roi_config : RoiConfig):
     preds   = []
     targets = []
     first = True
     bar = tqdm.tqdm(total = len(loader.dataset))
     for batch in utils.iter_batched(loader, 32):
         batch = Batch.collate(batch)
-        pred = predict(net, batch['image'], rois=batch['roi'])
+        pred = predict(
+            net, 
+            batch['image'], 
+            rois=determine_roi(batch, roi_config.center_crop), 
+            focus_roi_expansion_factor=roi_config.expansion_factor)
         if first:
             keys = list(frozenset(pred.keys()).intersection(frozenset(keys)))
             first = False
@@ -55,23 +87,31 @@ def interleaved(a,b):
 
 
 class TableBuilder:
+    data_name_table = {
+        'aflw2k3d' : 'AFLW 2k 3d',
+        'aflw2k3d_grimaces' : 'grimaces'
+    }
+
     def __init__(self):
         self._header = [ 'Model', 'Data', 'Yaw°', 'Pitch°', 'Roll°', 'Mean°', 'Geodesic°', 'XY%', 'S%' ]
         self._entries = []
     
-    def add_row(self, model : str, data : str, euler_angles : List[float], geodesic : float, rmse_pos : float, rmse_size : float):
+    def add_row(self, model : str, data : str, euler_angles : List[float], geodesic : float, rmse_pos : float, rmse_size : float, data_aux_string = None):
         maxlen = 30
         if len(model) > maxlen+3:
             model = '...'+model[-maxlen:]
+        data = self.data_name_table[data] + (data_aux_string if data_aux_string is not None else '')
         self._entries.append([model, data] + euler_angles + [ np.average(euler_angles).tolist(), geodesic, rmse_pos, rmse_size] )
     
     def build(self) -> str:
         return tabulate.tabulate(self._entries, self._header, tablefmt='github', floatfmt=".2f")
 
 
-def report(name, net, args, builder : TableBuilder):
-    loader = trackertraincode.pipelines.make_validation_loader(name)
-    preds, targets = compute_predictions_and_targets(loader, net, ['coord','pose', 'roi', 'pt3d_68'])
+
+def report(net_filename, data_name, roi_config, args, builder : TableBuilder):
+    loader = trackertraincode.pipelines.make_validation_loader(data_name)
+    net = load_pose_network(net_filename, args.device)
+    preds, targets = compute_predictions_and_targets(loader, net, ['coord','pose', 'roi', 'pt3d_68'], roi_config)
     # Position and size errors are measured relative to the ROI size. Hence in percent.
     poseerrs = trackertraincode.eval.PoseErr()(preds, targets)
     eulererrs = trackertraincode.eval.EulerAngleErrors()(preds, targets)
@@ -79,43 +119,45 @@ def report(name, net, args, builder : TableBuilder):
     rmse_pos = np.sqrt(np.average(np.sum(np.square(np.vstack([e_posx, e_posy]).T), axis=1), axis=0))
     rmse_size = np.sqrt(np.average(np.square(e_size)))
     builder.add_row(
-        model=basename(args.filename),
-        data=name,
+        model=basename(net_filename),
+        data=data_name,
         euler_angles=(np.average(np.abs(eulererrs), axis=0)*utils.rad2deg).tolist(),
         geodesic=(np.average(e_rot)*utils.rad2deg).tolist(),
         rmse_pos=(rmse_pos*100.).tolist(),
-        rmse_size=(rmse_size*100.).tolist()
+        rmse_size=(rmse_size*100.).tolist(),
+        data_aux_string=' / ' + str(roi_config)
     )
 
     if args.vis:
         order = interleaved(np.argsort(e_rot)[::-1], np.argsort(e_size)[::-1])
-        loader = trackertraincode.pipelines.make_validation_loader(name, order=order)
+        loader = trackertraincode.pipelines.make_validation_loader(data_name, order=order)
         new_preds = Batch(preds.meta, **{k:v[order] for k,v in preds.items()})
         new_preds.meta.batchsize = len(order)
         worst_rot_iter = iterate_predictions(loader, new_preds)
         fig, btn = vis.matplotlib_plot_iterable(worst_rot_iter, vis.draw_prediction)
-        fig.suptitle(name)
+        fig.suptitle(data_name + ' / ' + net_filename)
         return [fig, btn]
     else:
         return []
 
 
 def run(args):
-    net = load_pose_network(args.filename, args.device)
     gui = []
     table_builder = TableBuilder()
-    for name in [ 'aflw2k3d', 'aflw2k3d_grimaces']:
-        gui += report(name, net, args, table_builder)
+    roi_configs = comprehensive_roi_configs if args.comprehensive_roi else normal_roi_configs
+    for net_filename in args.filenames:
+        for name in [ 'aflw2k3d', 'aflw2k3d_grimaces']:
+            for roi_config in roi_configs:
+                gui += report(net_filename, name, roi_config, args, table_builder)
     print (table_builder.build())
     pyplot.show()
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Evaluate pose networks")
-    parser.add_argument('filename', help='filename of checkpoint or onnx model file', type=str)
+    parser.add_argument('filenames', help='filenames of checkpoint or onnx model file', type=str, nargs='*')
     parser.add_argument('--no-vis', dest='vis', help='disable visualization', default=True, action='store_false')
     parser.add_argument('--device', help='select device: cpu or cuda', default='cuda', type=str)
-    parser.add_argument('--res', dest='input_resolution', help='input resolution for loaded models where it is not clear', default=129, type=int)
-    parser.add_argument('--auto-level', dest='auto_level', help='automatically adjust brightness levels for maximum contrast within the roi', default=False, action='store_true')
+    parser.add_argument('--comprehensive-roi', action='store_true', default=False)
     args = parser.parse_args()
     run(args)

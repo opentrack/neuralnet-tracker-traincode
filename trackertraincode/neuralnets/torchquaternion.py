@@ -5,6 +5,7 @@ The real component comes last which makes it compatible to the scipy convention.
 pytorch3d and kornia are different.
 '''
 from typing import Union, Final
+import numpy as np
 import torch
 from torch import Tensor
 
@@ -148,3 +149,23 @@ def distance(a, b):
 
 def geodesicdistance(a,b):
     return 2.*torch.acos(torch.sum(a * b, dim=-1).abs().min(torch.as_tensor(1.,dtype=a.dtype)))
+
+
+def quat_average(quats):
+    quats = np.asarray(quats)
+    # Ensemble size, number of samples, dimensionality
+    E, N, D = quats.shape
+    assert D==4
+    # Sum over ensemble to get an idea of the largest axis on average.
+    # Then find the actual longest axis, i.e. i,j,k or w.
+    pivot_axes = np.argmax(np.sum(np.abs(quats), axis=0), axis=-1)
+    assert pivot_axes.shape == (N,)
+    mask = np.take_along_axis(quats, pivot_axes[None,:,None], axis=-1) < 0.
+    mask = mask[...,0] # Skip quaternion dimension
+    quats[mask,:] *= -1
+    quats = np.average(quats, axis=0)
+    norms = np.linalg.norm(quats, axis=-1, keepdims=True)
+    if not np.all(norms > 0.5):
+        print("Oh oh either quat_average is bugged or rotations predictions differ wildly")
+    quats /= norms
+    return quats
