@@ -11,6 +11,7 @@ from matplotlib import pyplot
 import itertools
 from collections import defaultdict
 import torch
+import os
 from torchvision.transforms import Compose
 from trackertraincode.neuralnets.torchquaternion import quat_average, geodesicdistance
 
@@ -46,7 +47,6 @@ class Poses(NamedTuple):
     xy : np.ndarray
     sz : np.ndarray
     pose_scales_tril : Optional[np.ndarray] = None
-    eyeparam : Optional[np.ndarray] = None
     coord_scales : Optional[np.ndarray] = None
 
 
@@ -64,45 +64,68 @@ def convertlabels(labels : dict) -> Poses:
 
 
 def plot_coord(ax, xy, sz, **kwargs):
-    ax.plot(xy[:1000,0] / 400 - 0.5, label='x', c='r', **kwargs)
-    ax.plot(xy[:1000,1] / 400 - 0.5, label='y', c='g', **kwargs)
-    ax.plot(sz[:1000] / 100 - 1., label='size', c='k', **kwargs)
+    ax[0].plot(xy[:1000,0], **kwargs)
+    ax[1].plot(xy[:1000,1], **kwargs)
+    ax[2].plot(sz[:1000], **kwargs)
 
 def plot_hpb(ax, hpb, **kwargs):
-    ax.plot(hpb[:1000,0], label='h', c='r', **kwargs)
-    ax.plot(hpb[:1000,1], label='p', c='g', **kwargs)
-    ax.plot(hpb[:1000,2], label='r', c='b', **kwargs)
+    rad2deg = 180./np.pi
+    line, = ax[0].plot(hpb[:1000,0]*rad2deg, **kwargs)
+    ax[1].plot(hpb[:1000,1]*rad2deg, **kwargs)
+    ax[2].plot(hpb[:1000,2]*rad2deg, **kwargs)
+    return line
 
 
 
 
-def visualize(preds : List[Poses]):
-    alphas = [0.5] * len(preds)
-    alphas[0] = 1.
+def visualize(preds : List[Poses], checkpoints : List[str]):
+    def make_nice(axes):
+        for ax in axes[:-1]:
+            ax.xaxis.set_visible(False)
+        axes[0].legend()
+        for i, ax in enumerate(axes):
+            ax.patch.set_visible(False) # Hide Background
+            ax2 = ax.twinx()
+            ax2.yaxis.set_visible(False)
+            ax2.set_zorder(ax.get_zorder()-1)
+            for a,b in blinks:
+                ax2.bar(0.5*(a+b), 1, width=b-a, bottom=0, color='yellow')
+        pyplot.tight_layout()
 
-    fig, axes = pyplot.subplots(4,1,figsize=(18,5))  
+    fig, axes = pyplot.subplots(6,1,figsize=(18,5))  
 
-    for i, alpha, pred in zip(itertools.count(0), alphas, preds):
-        plot_hpb(axes[0], pred.hpb, alpha=alpha)
-        plot_coord(axes[1], pred.xy, pred.sz, alpha=alpha)
-        if pred.pose_scales_tril is not None:
+    for i, pred in enumerate(preds):
+        line = plot_hpb(axes[:3], pred.hpb)
+        line.set_label(checkpoints[i])
+        plot_coord(axes[3:6], pred.xy, pred.sz)
+    
+    for ax, label in zip(axes, 'yaw,pitch,roll,x,y,size'.split(',')):
+        ax.set(ylabel=label)
+
+    make_nice(axes)
+
+    if any(p.pose_scales_tril is not None for p in preds):
+        fig2, axes = pyplot.subplots(7,1,figsize=(18,5))  
+
+        for pred in preds:
+            if pred.pose_scales_tril is None:
+                continue
             cov = pred.pose_scales_tril @ pred.pose_scales_tril.swapaxes(-1,-2)
+            ylim = np.amin(cov), np.amax(cov)
+            k = 0
             for i in range(3):
                 for j in range(i+1):
-                    axes[2].plot(cov[...,i,j], label=f'rv[{i},{j}]')
-            axes[2].plot(np.square(pred.coord_scales[...,2]),label='sz')
-        if pred.eyeparam is not None:
-            axes[3].plot(pred.eyeparam[:,0], label='left eye')
-            axes[3].plot(pred.eyeparam[:,1], label='right eye')
+                    axes[k].plot(cov[...,i,j])
+                    axes[k].set(ylabel=f'rv[{i},{j}]')
+                    axes[k].set(ylim=ylim)
+                    k += 1
+            axes[k].plot(np.square(pred.coord_scales[...,2]))
+            axes[k].set(ylabel='sz')
+        make_nice(axes)
+        
+        return [fig, fig2]
 
-    for ax in axes:
-        ax.patch.set_visible(False) # Hide Background
-        ax2 = ax.twinx()
-        ax2.set_zorder(ax.get_zorder()-1)
-        for a,b in blinks:
-            ax2.bar(0.5*(a+b), 1, width=b-a, bottom=0, color='yellow')
-        ax.legend()
-    return fig
+    return [fig]
 
 
 def report_blink_stability(poses_by_parameters : List[Poses]):
@@ -148,8 +171,9 @@ def main_open_loop(checkpoints : List[str], device):
     poses_by_checkpoints = defaultdict(list)
     for crop_size_factor in [1., 1.2]:
         poses = [ process(fn, crop_size_factor) for fn in checkpoints ]
-        fig = visualize(poses)
-        fig.suptitle(f'cropsize={crop_size_factor:.1f}')
+        figs = visualize(poses, checkpoints)
+        for fig in figs:
+            fig.suptitle(f'cropsize={crop_size_factor:.1f}')
         for fn, pose in zip(checkpoints, poses):
             poses_by_checkpoints[fn].append(pose)
     pyplot.show()
@@ -251,10 +275,12 @@ def main_analyze_pitch_vs_yaw(checkpoints : List[str]):
 
 
 def main_analyze_noise_resist(checkpoints : List[str]):
+    rng = np.random.RandomState(seed = 12345678)
+
     def noisify(img : torch.Tensor, noiselevel : float):
         return (img+noiselevel*torch.randn_like(img, dtype=torch.float32)).clip(0., 255.).to(torch.uint8)
 
-    def predict_noisy_dataset(net, loader, noiselevel, predictions_to_keep, rounds = 10) -> Poses:
+    def predict_noisy_dataset(net, loader, noiselevel, predictions_to_keep, rounds = 64) -> Poses:
         bar = tqdm.tqdm(total = len(loader.dataset))
         def predict_sample_list(samples : List[Batch]):
             rois = torch.stack([ s['roi'] for s in samples ])
@@ -286,19 +312,36 @@ def main_analyze_noise_resist(checkpoints : List[str]):
         preds_error  = geodesicdistance(mean_preds, gt).mean(dim=0)
         return preds_error, preds_spread
 
-    loader = trackertraincode.pipelines.make_validation_loader('aflw2k3d', order = np.random.choice(1900,size=100))
+    loader = trackertraincode.pipelines.make_validation_loader('aflw2k3d', order = rng.choice(1900,size=100))
 
     rad2deg = 180./np.pi
 
+    metrics_by_network = defaultdict(list)
     for checkpoint in checkpoints:
         net = load_pose_network(checkpoint, 'cuda')
-        table = [[ 'noise', 'err', 'spread' ]]
         for noiselevel in [ 1., 8., 16., 32. ]:
             preds, gt  = predict_noisy_dataset(net, loader, noiselevel, ('coord','pose','roi'))
             err, spread = compute_metrics_for_quats(gt['pose'], preds['pose'])
-            table.append([noiselevel, err*rad2deg, spread*rad2deg])
-        print (f"Checkpoint: {checkpoint}")
-        print (tabulate.tabulate(table[1:], table[0]))
+            metrics_by_network[checkpoint].append([noiselevel, err*rad2deg, spread*rad2deg])
+
+    prefix = os.path.commonprefix(list(metrics_by_network.keys()))
+    metrics_by_network = { os.path.relpath(k,prefix):v for k,v in metrics_by_network.items() }
+
+    for name, metrics in metrics_by_network.items():
+        print (f"Checkpoint: {name}")
+        print (tabulate.tabulate(metrics, [ 'noise', 'err', 'spread' ], tablefmt='github', floatfmt=".2f"))
+
+    if 1: # vis
+        fig, ax = pyplot.subplots(2,1)
+        for name, metrics in metrics_by_network.items():
+            x, y, spread = np.asarray(metrics).T
+            ax[0].plot(x, spread, label=name)
+            ax[0].legend()
+            ax[0].set(xlim=(0.,32), ylim=(0.,2.), ylabel='rot spread')
+            ax[1].plot(x, y, label=name)
+            ax[1].set(xlim=(0.,32), ylim=(4.,6.), xlabel='input noise std', ylabel='rot error')
+        pyplot.show()
+
 
 if __name__ == '__main__':
     np.seterr(all='raise')
