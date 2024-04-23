@@ -1,6 +1,6 @@
 from scipy.spatial.transform import Rotation
 from trackertraincode.neuralnets.math import affinevecmul, random_choice
-from trackertraincode.neuralnets.torchquaternion import mult, rotate, tomatrix, from_rotvec, iw, to_rotvec, slerp
+from trackertraincode.neuralnets.torchquaternion import mult, rotate, tomatrix, from_rotvec, iw, to_rotvec, slerp, geodesicdistance
 from trackertraincode.neuralnets.affine2d import Affine2d, roi_normalizing_transform
 
 import torch
@@ -46,8 +46,12 @@ def test_quaternions():
         assert np.allclose((rots2.inv()*Rotation.from_quat(q_test)).magnitude(),0.)
 
         rot_test = Rotation.from_quat(slerp(torch.from_numpy(rots.as_quat()), torch.from_numpy(rots2.as_quat()), .5).numpy())
-        np.allclose((rots.inv()*rot_test).magnitude() ,(rots2.inv()*rot_test).magnitude())
-        np.allclose((rots.inv()*rot_test).magnitude(), 0.5*(rots.inv()*rots2).magnitude())
+        assert np.allclose((rots.inv()*rot_test).magnitude() ,(rots2.inv()*rot_test).magnitude())
+        assert np.allclose((rots.inv()*rot_test).magnitude(), 0.5*(rots.inv()*rots2).magnitude())
+
+        angle_difference = geodesicdistance(torch.from_numpy(rots.as_quat()), torch.from_numpy(rots2.as_quat()))
+        expected_angle_diff = (rots.inv() * rots2).magnitude()
+        assert np.allclose(angle_difference, expected_angle_diff)
 
 
 def test_transforms():

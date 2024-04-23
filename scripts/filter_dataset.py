@@ -75,7 +75,7 @@ def main():
     parser = argparse.ArgumentParser(description="Remove sequences")
     parser.add_argument('source', help="source file", type=str)
     parser.add_argument('destination', help='destination file', type=str)
-    parser.add_argument('bad',help='indices of bad sequences', type=str)
+    parser.add_argument('bad',help='Indices of bad sequences. Comma separated.', type=str)
     args = parser.parse_args()
     bad = [ int(s.strip()) for s in args.bad.split(',') ]
     print (f"Filtering {len(bad)} sequences")

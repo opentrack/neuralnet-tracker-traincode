@@ -15,12 +15,17 @@ import io
 from typing import List, Optional, Tuple, Dict, NamedTuple
 import re
 import tqdm
+import torch
 from pathlib import Path
 from scipy.interpolate import interp1d
 from trackertraincode.datasets.preprocessing import box_iou, imdecode
-from trackertraincode.datasets.preprocessing import imread, rgb2gray, extend_rect, imencode, imrescale, imshape
+from trackertraincode.datasets.preprocessing import imread, rgb2gray, extend_rect, imencode, imrescale, imshape, ImageFormat
+from trackertraincode.neuralnets.affine2d import Affine2d
+from trackertraincode.datatransformation.affinetrafo import transform_roi, transform_points
 from trackertraincode import vis
 from trackertraincode.datasets.dshdf5pose import create_pose_dataset, FieldCategory
+from dsprocess_wflw import cropped
+
 
 C = FieldCategory
 
@@ -170,20 +175,34 @@ def do_conversion(source_dir : str, f : h5py.File, mtcnn : MTCNN, max_count : in
 
     pt2ds_68 = []
     rois = []
+    trafos = []
 
     for i,name in enumerate(tqdm.tqdm(dsinfo.itemnames)):
         rawjpg, roi, points = read_data(dsinfo, name, mtcnn)
         points = cvt_landmarks_68pt(points, improved_chin=True)
+
+        img = imdecode(rawjpg, cv2.IMREAD_COLOR)
+        img, trafo = cropped(img, roi, desired_roi_size=224, padding_factor=0.5, abs_padding=10)
+        
         pt2ds_68.append(points)
         rois.append(roi)
-        ds_img[i] = np.frombuffer(rawjpg, dtype='B')
+        trafos.append(trafo.tensor())
+        
+        ds_img[i] = imencode(img, ImageFormat.JPG, quality=95)
+        #ds_img[i] = np.frombuffer(rawjpg, dtype='B')
+
+    trafos = Affine2d(torch.stack(trafos))
+    pt2ds_68 = np.asarray(pt2ds_68).astype(np.float32)
+    rois = np.asarray(rois).astype(np.float32)
+    pt2ds_68 = transform_points(trafos, torch.from_numpy(pt2ds_68)).numpy()
+    rois = transform_roi(trafos, torch.from_numpy(rois)).numpy()
 
     create_pose_dataset(f, C.points, 'pt2d_68', data = pt2ds_68, dtype='f2')
     create_pose_dataset(f, C.roi, data = rois, dtype='f2')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Convert dataset")
-    parser.add_argument('source', help="source file", type=str)
+    parser.add_argument('source', help="source dir", type=str)
     parser.add_argument('destination', help="destination file", type=str)
     parser.add_argument('--only-megaface', help="Only generate dataset from the megaface part of the original", default=False, action='store_true')
     parser.add_argument('-n', dest = 'count', type=int, default=None)

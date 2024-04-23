@@ -1,79 +1,57 @@
 import numpy as np
 from copy import copy
-from typing import Callable, Set, Sequence, Union, List, Tuple, Dict, Optional, NamedTuple
+from typing import Callable, Set, Sequence, Union, List, Tuple, Dict, Optional, NamedTuple, Any
 from PIL import Image
+from numpy.typing import NDArray
 import enum
 import cv2
 
 import torch
 from torch import Tensor
 import torch.nn.functional as F
-from torchvision.transforms.functional import pil_to_tensor, to_pil_image
+from torchvision.transforms.functional import crop, resize
 import kornia.filters
 
 from trackertraincode.datasets.dshdf5pose import FieldCategory, imagelike_categories
 from trackertraincode.neuralnets.affine2d import Affine2d
-from trackertraincode.neuralnets.math import affinevecmul, matvecmul
+from trackertraincode.neuralnets.math import affinevecmul
 from trackertraincode.datatransformation.core import _ensure_image_nchw, _ensure_image_nhwc
 
 
-
-def position_normalization(w : int ,h : int, align_corners : bool):
-    if align_corners:
-        # Pixels are considered vertices of the image grid
-        # Thus the maximum coordinate is w-1, or h-1 respectively.
-        # E.g. a 1 pixel image is not possible as it would only be a singular point.
-        #      a 2 pixel image is defined by the colors at the 4 corner points and thus has also finite area.
-        w, h = w-1, h-1
+def position_normalization(w : int ,h : int):
     return Affine2d.range_remap_2d([0.,0.], [w,h], [-1., -1.], [1., 1.])
 
 
-def position_unnormalization(w : int, h : int, align_corners : bool):
-    if align_corners:
-        w, h = w-1, h-1
+def position_unnormalization(w : int, h : int):
     return Affine2d.range_remap_2d([-1.,-1.], [1.,1.], [0., 0.], [w, h])
 
 
-def _to_nhw_batched(img : Tensor, view_roi : Tensor):
-    shape_prefix = img.shape[:-3]
-    assert shape_prefix == view_roi.shape[:-1]
-    C, H, W = img.shape[-3:]
-    img = img.view(-1, H, W)
-    view_roi = view_roi[...,None,:].expand(*(-1 for _ in shape_prefix),C,-1).clone().view(-1,4)
-    def restore_image_format(new_img):
-        return new_img.view(*shape_prefix,C,new_img.shape[-2],new_img.shape[-1])
-    return img, view_roi, restore_image_format
+def _extract_size_tuple(new_size : Union[int, Tuple[int,int]]):
+    try:
+        new_w, new_h = new_size
+    except TypeError:
+        assert int(new_size), "Must be convertible to single integer"
+        new_w = new_h = new_size
+    return new_w, new_h
 
 
-def _to_nhwc_batched(imgs : Tensor, view_roi : Tensor):
-    imgs = _ensure_image_nhwc(imgs)
-    shape_prefix = imgs.shape[:-3]
-    imgs = imgs.view(-1,*imgs.shape[-3:])
-    view_roi = view_roi.view(-1,4)
-    def restore_image_format(new_img):
-        return _ensure_image_nchw(new_img.view(*shape_prefix,*new_img.shape[-3:]))
-    return imgs, view_roi, restore_image_format
+def _fixup_image_format_for_resample(img : Tensor):
+    original_dtype = img.dtype
+    assert original_dtype in (torch.uint8, torch.float32, torch.float16)
+    if img.device == torch.device('cpu'):
+        new_dtype = torch.float32 # Float32 and Uint8 are not supported
+    else:
+        new_dtype = torch.float16 if original_dtype==torch.uint8 else original_dtype
+    img = img.to(new_dtype)
+    def restore(x : Tensor):
+        if original_dtype == torch.uint8:
+            x = x.clip(0., 255.).to(dtype=torch.uint8)
+        return x
+    return img, restore
 
 
-def _pil_extract_roi(img : Image.Image, roi : Tuple[float]):
-    w, h = img.width, img.height
-    x0, y0, x1, y1 = tuple(map(int,roi))
-    xmin = min(x0,0)
-    ymin = min(y0,0)
-    xmax = max(x1,w)
-    ymax = max(y1,h)
-    canvas_size = (xmax-xmin,ymax-ymin)
-    canvas = Image.new(img.mode, canvas_size)
-    x0 -= xmin
-    x1 -= xmin
-    y0 -= ymin
-    y1 -= ymin
-    canvas.paste(img, (0-xmin,0-ymin,w-xmin,h-ymin))
-    img = canvas.crop((x0,y0,x1,y1))
-    return img
-
-
-def _numpy_extract_roi(img : np.ndarray, roi : Tuple[float]):
+def _numpy_extract_roi(img : np.ndarray, roi : Tensor):
+    # TODO: use OpenCV's copy border function?
     h, w, c = img.shape
     x0, y0, x1, y1 = tuple(map(int,roi))
     xmin = min(x0,0)
@@ -91,88 +69,108 @@ def _numpy_extract_roi(img : np.ndarray, roi : Tuple[float]):
     return img
 
 
-def transform_image_opencv(imgs : Tensor, view_roi : Tensor, new_size : int, category):
-    assert category == FieldCategory.image, "Not Implemented"
-    imgs, view_roi, restore_image_format = _to_nhwc_batched(imgs, view_roi)
-    roi_for_pil = [ tuple(float(x) for x in roi) for roi in view_roi]
-    def _do_crop_and_resample(img, roi):
-        img = _numpy_extract_roi(img.numpy(), roi)
-        interpolation = cv2.INTER_AREA if (img.shape[-2] >= new_size) else cv2.INTER_LINEAR
-        img = cv2.resize(img, (new_size, new_size), interpolation=interpolation)
-        return torch.from_numpy(img)
-    imgs = [ _do_crop_and_resample(img,roi) for img, roi in zip(imgs,roi_for_pil) ]
-    imgs = torch.stack(imgs,axis=0)
-    imgs = restore_image_format(imgs)
-    return imgs
+def croprescale_image_cv2(img : Tensor, roi : Tensor, new_size):
+    new_w,new_h = _extract_size_tuple(new_size)
+    img = _ensure_image_nhwc(img)
+    img = _numpy_extract_roi(img.numpy(), roi)
+    interpolation = cv2.INTER_AREA if (img.shape[-2] >= new_size) else cv2.INTER_LINEAR
+    img = cv2.resize(img, (new_w, new_h), interpolation=interpolation)
+    img = torch.from_numpy(img)
+    if img.ndim == 2: # Add back channel dimension which might have been removed by opencv
+        img = img[...,None]
+    img = _ensure_image_nchw(img)
+    return img
 
 
-def transform_image_pil(imgs : Tensor, view_roi : Tensor, new_size : int, category):
-    assert category == FieldCategory.image, "Not Implemented"
-    imgs, view_roi, restore_image_format = _to_nhw_batched(imgs, view_roi)
-    roi_for_pil = [ tuple(float(x) for x in roi) for roi in view_roi]
-    def _do_crop_and_resample(img, roi):
-        img = to_pil_image(img, mode='F' if img.dtype==torch.float32 else 'L')
-        img = _pil_extract_roi(img, roi)
-        img = img.resize((new_size,new_size),resample=Image.HAMMING, reducing_gap=3.)
-        img = pil_to_tensor(img)
-        return img
-    imgs = [ _do_crop_and_resample(img,roi) for img, roi in zip(imgs,roi_for_pil) ]
-    imgs = torch.stack(imgs, dim=0)
-    imgs = restore_image_format(imgs)
-    return imgs
-
-
-def transform_image_torch(tmp : Tensor, tr : Affine2d, new_size : int, align_corners : bool, category):
-    assert category == FieldCategory.image, "Not Implemented"
-    # For regular images. TODO: semseg
-    original_dtype = tmp.dtype
-    assert original_dtype in (torch.uint8, torch.float32)
-    tmp = tmp.to(torch.float32)
-    shape_prefix = tmp.shape[:-3]
-    if tmp.ndim==3:
-        # Add batch dim
-        tr = tr[None,...]
-        tmp = tmp[None,...]
-    C, H, W = tmp.shape[-3:]
-    tmp = tmp.view(-1, C, H, W)
-    B = tmp.size(0)
-    try:
-        new_w, new_h = new_size
-    except TypeError:
-        assert int(new_size), "Must be convertible to single integer"
-        new_w = new_h = new_size
-    if align_corners:
-        m1= Affine2d.range_remap_2d([-1,-1], [1,1], [0, 0], [W-1, H-1])[None,...]
-        m2 = Affine2d.range_remap_2d([0, 0], [new_w-1, new_h-1], [-1,-1], [1, 1])[None,...]
+def affine_transform_image_cv2(img : Tensor, tr : Affine2d, new_size : Union[int, Tuple[int,int]]):
+    new_w,new_h = _extract_size_tuple(new_size)
+    img = _ensure_image_nhwc(img)
+    scale_factor = float(tr.scales.numpy())
+    if scale_factor > 1.:
+        img = cv2.warpAffine(
+            img.numpy(), 
+            M=tr.tensor().numpy(), 
+            dsize=(new_w,new_h), 
+            flags=cv2.INTER_LINEAR, 
+            borderMode=cv2.BORDER_CONSTANT, 
+            borderValue=None)
     else:
-        m1= Affine2d.range_remap_2d([-1,-1], [1,1], [0, 0], [W, H])[None,...]
-        m2 = Affine2d.range_remap_2d([0, 0], [new_w, new_h], [-1,-1], [1, 1])[None,...]
-    tr_normalized = m2 @ tr @ m1
+        rot_w, rot_h = round(new_w/scale_factor), round(new_h/scale_factor)
+        scale_compensation = rot_h / new_h
+        scaletr = Affine2d.trs(scales=torch.tensor(scale_compensation))
+        rotated = cv2.warpAffine(
+            img.numpy(), 
+            M=(scaletr @ tr).tensor().numpy(), 
+            dsize=(rot_w,rot_h), 
+            flags=cv2.INTER_LINEAR, 
+            borderMode=cv2.BORDER_CONSTANT, 
+            borderValue=None)
+        img = cv2.resize(rotated, dsize=(new_w, new_h), interpolation=cv2.INTER_AREA)
+    if img.ndim == 2: # Add back channel dimension which might have been removed by opencv
+        img = img[...,None]
+    return torch.from_numpy(_ensure_image_nchw(img))
+
+
+def _normalize_transform(tr : Affine2d, wh : Tuple[int,int], new_wh : Tuple[int,int]):
+    '''Normalize an affine image transform so that the input/output domain is [-1,1] instead of pixel ranges.
+    Image size is given as (width,height) tuples.
+    '''
+    w, h = wh
+    new_w, new_h = new_wh
+    m1= Affine2d.range_remap_2d([-1,-1], [1,1], [0, 0], [w, h])[None,...]
+    m2 = Affine2d.range_remap_2d([0, 0], [new_w, new_h], [-1,-1], [1, 1])[None,...]
+    return m2 @ tr @ m1
+
+
+def croprescale_image_torch(img : Tensor, roi : Tensor, new_size : Union[int, Tuple[int,int]]):
+    assert roi.dtype == torch.int32
+    assert img.ndim == 3
+    assert roi.ndim == 1
+    img, restore_dtype = _fixup_image_format_for_resample(img)
+    new_w, new_h = _extract_size_tuple(new_size)
+    lt = roi[:2]
+    wh = roi[2:]-roi[:2]
+    img = crop(img, lt[1], lt[0], wh[1], wh[0])
+    img = resize(img, (new_h, new_w), antialias=True)
+    assert img.shape[-2:] == (new_h, new_w), f"Torchvision resize failed. Expected shape ({new_h,new_w}). Got {img.shape[-2:]}."
+    img = restore_dtype(img)
+    return img
+
+
+def affine_transform_image_torch(tmp : Tensor, tr : Affine2d, new_size : Union[int, Tuple[int,int]], antialias=False):
+    '''Basically torch.grid_sample.
+
+    WARNING: tr is defined w.r.t. pixel ranges, not [-1,1]
+    '''
+    # For regular images. TODO: semseg
+    tmp, restore_dtype = _fixup_image_format_for_resample(tmp)
+    new_w, new_h = _extract_size_tuple(new_size)
+    C, H, W = tmp.shape
+    tmp = tmp[None,...] # Add batch dim
+    tr = tr[None,...]
+    tr_normalized = _normalize_transform(tr, (W,H), (new_w, new_h))
     tr_normalized = tr_normalized.inv().tensor()
-    if 1: # Anti-aliasing
+    if antialias:
+        # A little bit of Anti-aliasing
+        # WARNING: this is inefficient as the filter size gets larger
         scaling = tr.scales
         sampling_distance = 1./scaling
-        #if sampling_distance > 2.:
-        #    tmp = trackertraincode.fftblur.fftblur(tmp, 0.5*sampling_distance)
-        #elif sampling_distance > 1.:
-        if 1:
-            ks = 0.5*sampling_distance
-            intks = max(3,int(ks*10))
-            intks = intks if (intks&1)==1 else (intks+1)
-            tmp = kornia.filters.gaussian_blur2d(tmp, (intks,intks), (ks,ks), border_type='constant', separable=True)
+        ks = 0.4*sampling_distance
+        intks = max(3,int(ks*3))
+        intks = intks if (intks&1)==1 else (intks+1)
+        tmp = kornia.filters.gaussian_blur2d(tmp, (intks,intks), (ks,ks), border_type='constant', separable=True)
     grid = F.affine_grid(
-        tr_normalized, 
-        [B, C, new_h, new_w],
-        align_corners=align_corners)
+        tr_normalized.to(device=tmp.device), 
+        [1, C, new_h, new_w],
+        align_corners=False)
     if 0: # Debugging
         from matplotlib import pyplot
         pyplot.imshow(tmp[0,0], extent=[-1.,1.,1.,-1.])
         pyplot.scatter(grid[0,:,:,0].ravel(), grid[0,:,:,1].ravel())
         pyplot.show()
-    tmp = F.grid_sample(tmp, grid, align_corners=align_corners, mode='bilinear', padding_mode='zeros') # if align_corners else 'border')
-    tmp = tmp.view(*shape_prefix, C, new_h, new_w)
-    if original_dtype != torch.float32:
-        tmp = tmp.clip(0., 255.).to(dtype=torch.uint8)
+    tmp = F.grid_sample(tmp, grid, align_corners=False, mode='bilinear', padding_mode='zeros')
+    tmp = tmp[0] # Remove batch dim
+    tmp = restore_dtype(tmp)
     return tmp
 
 

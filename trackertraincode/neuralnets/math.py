@@ -1,7 +1,8 @@
+from typing import List
 import numpy as np
 import torch
 import torch.nn.functional as F
-
+import functools
 
 def matvecmul(m, v):
     '''
@@ -44,3 +45,25 @@ def inv_smoothclip0(x : torch.Tensor) -> torch.Tensor:
     z[mask] -= 1.
     z[~mask] = torch.log(z[~mask])
     return z.view(x.shape)
+
+
+@torch.jit.script
+def sqrclip0(x : torch.Tensor, beta : float):
+    z = F.relu(x + beta*0.5)
+    return torch.where(
+        z < beta, 
+        (0.5/beta)*torch.square(z),
+        z - 0.5*beta)
+
+
+@torch.jit.script
+def inv_sqrclip0(y : torch.Tensor, beta  : float):
+    return torch.where(
+        y > 0.5*beta,
+        y + 0.5*beta,
+        torch.sqrt(beta*2.*y)
+    ) - beta*0.5
+
+
+def chain_gmm(*matrices : List[torch.Tensor]) -> torch.Tensor:
+    return functools.reduce(torch.matmul, matrices)

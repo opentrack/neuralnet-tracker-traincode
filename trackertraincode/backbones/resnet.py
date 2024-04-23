@@ -84,7 +84,8 @@ class ResNetBackbone(nn.Module):
         return y, None
 
 
-def resnet18():
+def resnet18(use_blurpool : bool = True):
+    assert use_blurpool == True, "Not implemented"
     net = ResNetBackbone(
         torchvision.models.resnet._resnet, 
         block=CustomBlock,

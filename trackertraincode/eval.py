@@ -1,8 +1,9 @@
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Iterable, Optional, Tuple, Dict, Any, Union, List
+from typing import Iterable, Optional, Tuple, Dict, Any, Union, List, NamedTuple
 from copy import copy
+from numpy.typing import NDArray
 
 import torch
 from torch import nn
@@ -52,14 +53,18 @@ def _onnx_batch_inference(session, batch):
 def load_pose_network(filename, device) -> InferenceNetwork:
     if filename.endswith('.onnx'):
         import onnxruntime
+        # For showing device placement
+        #onnxruntime.set_default_logger_severity(1)
+        #onnxruntime.set_default_logger_verbosity(0)
 
         class OnnxPoseNetwork(InferenceNetwork):
             def __init__(self, modelfile, device):
-                provider = {
-                    'cpu' : 'CPUExecutionProvider',
-                    'cuda' : 'CUDAExecutionProvider'
+                providers = {
+                    'cpu' :  [ 'CPUExecutionProvider', ],
+                    # This may look odd but ONNX can decide to run certain ops on the CPU!
+                    'cuda' : [ 'CUDAExecutionProvider', 'CPUExecutionProvider' ]
                 }[device]
-                self.session = onnxruntime.InferenceSession(modelfile, providers=[provider])
+                self.session = onnxruntime.InferenceSession(modelfile, providers=providers)
                 # TODO: decide on a names. Also for the OpenTrack plugin.
                 namemap = {
                     'pos_size' : 'coord',
@@ -70,12 +75,13 @@ def load_pose_network(filename, device) -> InferenceNetwork:
                     'pos_size_std' : 'coord_scales',
                     'rotaxis_scales_tril' : 'pose_scales_tril',
                     'rotaxis_std' : 'pose_scales_tril',
+                    'rot_conc_tril' : 'pose_conc_tril',
                     'box_scales' : 'roi_scales',
                     'box_std' : 'roi_scales'
                 }
                 self.output_names = [
                     namemap.get(o.name,o.name) for o in self.session.get_outputs() ]
-                #print ("Model version string: ", self.session.get_modelmeta().version)
+                #print ("Model version string: ", self.session.get_modelmeta().version, ' has outputs', self.output_names)
                 
                 if isinstance(self.session.get_inputs()[0].shape[0],int):
                     self._inference = _onnx_single_frame_inference
@@ -113,7 +119,11 @@ def load_pose_network(filename, device) -> InferenceNetwork:
         class PytorchPoseNetwork(InferenceNetwork):
             def __init__(self, modelfile, device):
                 # The checkpoints are not self-describing. So we must have a matching network in code.
-                net = trackertraincode.neuralnets.models.NetworkWithPointHead(enable_point_head=True, enable_face_detector=True, config='mobilenetv1', enable_uncertainty=True)
+                net = trackertraincode.neuralnets.models.NetworkWithPointHead(
+                    enable_point_head=True, 
+                    enable_face_detector=False, 
+                    config='mobilenetv1', 
+                    enable_uncertainty=True)
                 state_dict = torch.load(modelfile)
                 net.load_state_dict(state_dict)
                 net.eval()
@@ -176,7 +186,7 @@ def predict(net : InferenceNetwork, images : List[Tensor], rois : Optional[Tenso
     batch = [ create_batch(i,r) for i,r in zip(images, rois) ]
     batch = Batch.collate(batch)
 
-    batch = dtr.normalize_batch(batch, align_corners=True)
+    batch = dtr.normalize_batch(batch)
 
     preds = net(whiten_image(batch['image']).to(net.device_for_input))
     
@@ -188,13 +198,13 @@ def predict(net : InferenceNetwork, images : List[Tensor], rois : Optional[Tenso
         'pose' : dtr.FieldCategory.quat,
         'pt3d_68' : dtr.FieldCategory.points,
     })
-    preds = dtr.unnormalize_batch(preds, align_corners=False)
+    preds = dtr.unnormalize_batch(preds)
 
     if net.device_for_input != input_device:
         preds = dtr.to_device(input_device, preds)
 
     if roi_focus is not None:
-        batch = dtr.unnormalize_batch(batch, align_corners=False)
+        batch = dtr.unnormalize_batch(batch)
         backtrafo = Affine2d(batch['image_backtransform'])
         preds = _apply_backtrafo(backtrafo, preds)
     return preds
@@ -204,6 +214,15 @@ def predict(net : InferenceNetwork, images : List[Tensor], rois : Optional[Tenso
 ##########################################
 ## Metrics for evaluation
 ##########################################
+
+# For reference, here is how the euler angle error metric is computed in 6DRepNet.
+# From what I can tell it's the same approach in principle. Ultimately the euler angles
+# are compared with the original GT angles from AFLW 2k 3D.
+# https://github.com/thohemp/6DRepNet/blob/master/sixdrepnet/utils.py#L192
+# https://github.com/thohemp/6DRepNet/blob/master/sixdrepnet/datasets.py#L58
+# https://github.com/thohemp/6DRepNet/blob/master/sixdrepnet/test.py#L137
+# I checked that their utils.compute_euler_angles_from_rotation_matrices is the inverse
+# of their utils.get_R.
 
 
 class LocalizerBoxMeanSquareErrors(object):
@@ -256,3 +275,63 @@ class EulerAngleErrors(object):
         errors = utils.angle_errors(euler_target, euler)
         return errors
 
+
+def _eval_keypoints(pred : Tensor, gt : Tensor, dims = 3):
+    # Pred and GT are bached point tensors with shapes
+    # B x N x 3, where N is the number of keypoints
+    B, N, D = pred.shape
+    assert D == 3
+    assert pred.shape == gt.shape
+    pred = pred.clone()
+    gt = gt.clone()
+    pred[:, :, 2] -= torch.mean(pred[:, :, 2], dim=-1, keepdim=True)
+    gt  [:, :, 2] -= torch.mean(gt  [:, :, 2], dim=-1, keepdim=True)
+    dist   = torch.mean(torch.norm(pred[:,:,:dims] - gt[:,:,:dims], dim=-1), dim=-1)
+    left   = torch.amin(gt[:, :, 0], dim=1)
+    right  = torch.amax(gt[:, :, 0], dim=1)
+    top    = torch.amin(gt[:, :, 1], dim=1)
+    bottom = torch.amax(gt[:, :, 1], dim=1)
+    bbox_size = torch.sqrt((right - left) * (bottom - top))
+    dist = dist / bbox_size
+    return dist.cpu().numpy()
+
+
+# Adapted from https://github.com/MCG-NJU/SADRNet/blob/main/src/model/loss.py#L224
+class UnweightedKptNME:
+    def __init__(self, dimensions=3):
+        self.dims = dimensions
+
+    def __call__(self, pred, batch):
+        return _eval_keypoints(pred['pt3d_68'], batch['pt3d_68'], self.dims)
+
+
+class KptNmeResults(NamedTuple):
+    bin_30_nme : float
+    bin_60_nme : float
+    bin_90_nme : float
+    avg_nme    : float
+
+
+class KptNME:
+    def __init__(self, dimensions=3):
+        self.dims = dimensions
+    
+    def __call__(self, pred, batch):
+        #return self._eval_keypoints(pred['pt3d_68'], batch['pt3d_68'])
+        masks = self._compute_bin_masks(batch['pose'])
+        nme_by_bins = [ np.average(_eval_keypoints(pred['pt3d_68'][m], batch['pt3d_68'][m], self.dims), axis=0).tolist() for m in masks ]
+        return KptNmeResults(
+            *nme_by_bins,
+            np.average(nme_by_bins).tolist()
+        )
+
+    def _compute_bin_masks(self, pose_gt : Tensor):
+        '''Masks for the yaw bins from the literature: 0-30, 30-60, 60-90 deg.'''
+        rot = utils.convert_to_rot(pose_gt.cpu().numpy())
+        pyr_gt = np.array([ utils.inv_aflw_rotation_conversion(r) for r in rot ])
+        abs_yaw_deg = np.abs(pyr_gt[:,1]) * 180./np.pi
+        bounds_list = [(0.,30.),(30.,60.),(60.,90.)]
+        masks = [
+            ((a <= abs_yaw_deg) & (abs_yaw_deg < b)) for (a,b) in bounds_list
+        ]
+        return masks

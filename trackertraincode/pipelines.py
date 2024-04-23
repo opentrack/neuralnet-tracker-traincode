@@ -1,13 +1,13 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+from typing import List, Dict, Set, Sequence, Any, Type
 from os.path import join, dirname
 import numpy as np
 import os
 import h5py
 from scipy.spatial.transform import Rotation
 import enum
-from typing import List, Dict, Set, Sequence
 import random
 from functools import partial
 import cv2
@@ -30,7 +30,6 @@ class  Tag(enum.Enum):
     FACE_DETECTION = 3
     ONLY_LANDMARKS = 4
     ONLY_LANDMARKS_25D = 5
-    EYES_AND_LANDMARKS_2D = 6
     ONLY_POSE = 7
     POSE_WITH_LANDMARKS_3D_AND_2D = 8
     ONLY_LANDMARKS_2D = 9
@@ -49,6 +48,7 @@ class Id(enum.Enum):
     REPO_300WLP = 15  
     WFLW_LP = 16
     LAPA_MEGAFACE_LP = 17
+    REPO_300WLP_WO_EXTRA = 18
 
 
 # See https://pytorch.org/docs/stable/notes/randomness.html
@@ -98,24 +98,24 @@ def make_lapa_dataset(transform=None):
 
 
 def make_lapa_megaface_lp_dataset(transform=None):
-    filename = join(os.environ['DATADIR'],'lapa-megaface-augmented.h5')
+    filename = join(os.environ['DATADIR'],'lapa-megaface-augmented-v1.5.h5')
     return Hdf5PoseDataset(filename, transform=transform, dataclass=Tag.POSE_WITH_LANDMARKS)
 
 
 def make_synface_dataset(transform=None):
-    filename = join(os.environ['DATADIR'],'microsoft_synface_100000.h5')
+    filename = join(os.environ['DATADIR'],'microsoft_synface_100000-v1.1.h5')
     ds = Hdf5PoseDataset(filename, transform=transform, dataclass=Tag.ONLY_LANDMARKS_25D)
     return ds
 
 
 def make_wflw_relabeled_dataset(transform=None, test_transform=None):
-    train = Hdf5PoseDataset(join(os.environ['DATADIR'],'wflw_train.h5'), transform=transform, dataclass=Tag.EYES_AND_LANDMARKS_2D)
-    test = Hdf5PoseDataset(join(os.environ['DATADIR'],'wflw_test.h5'), transform=test_transform, dataclass=Tag.EYES_AND_LANDMARKS_2D)
+    train = Hdf5PoseDataset(join(os.environ['DATADIR'],'wflw_train.h5'), transform=transform, dataclass=Tag.ONLY_LANDMARKS_2D)
+    test = Hdf5PoseDataset(join(os.environ['DATADIR'],'wflw_test.h5'), transform=test_transform, dataclass=Tag.ONLY_LANDMARKS_2D)
     return train, test
 
 
 def make_wflw_lp_dataset(transform=None):
-    return Hdf5PoseDataset(join(os.environ['DATADIR'],'wflw_augmented_v3.h5'), transform=transform, dataclass=Tag.POSE_WITH_LANDMARKS)
+    return Hdf5PoseDataset(join(os.environ['DATADIR'],'wflw_augmented_v3.3.h5'), transform=transform, dataclass=Tag.POSE_WITH_LANDMARKS)
 
 
 def make_widerface_datasets(transform=None):
@@ -139,6 +139,16 @@ def indices_without_extreme_poses(filename):
 
 def make_aflw2k3d_dataset(remove_extreme_poses = True, transform=None):
     filename = join(os.environ['DATADIR'],'aflw2k.h5')
+    aflw = Hdf5PoseDataset(filename, transform=transform, dataclass=Tag.POSE_WITH_LANDMARKS)
+    if remove_extreme_poses:
+        indices = indices_without_extreme_poses(filename)
+        print (f"Filtering {len(aflw)-len(indices)} extreme poses from aflw2k-3d dataset")
+        aflw = Subset(aflw, indices)
+    return aflw
+
+
+def make_aflw2k3d_closedeyes_dataset(remove_extreme_poses = True, transform=None):
+    filename = join(os.environ['DATADIR'],'aflw2k3d-closedeyes.h5')
     aflw = Hdf5PoseDataset(filename, transform=transform, dataclass=Tag.POSE_WITH_LANDMARKS)
     if remove_extreme_poses:
         indices = indices_without_extreme_poses(filename)
@@ -171,8 +181,12 @@ def make_300wlp_dataset(transform=None):
     return ds
 
 
-def make_repro_300wlp_dataset(transform=None):
-    ds = Hdf5PoseDataset(join(os.environ['DATADIR'],'reproduction_300wlp-v11.h5'), transform=transform, dataclass=Tag.POSE_WITH_LANDMARKS)
+def make_repro_300wlp_dataset(transform=None, with_eye_aug=True):
+    filename = {
+        True : 'reproduction_300wlp-v12.h5',
+        False : 'reproduction_300wlp_simple.h5'
+    }[with_eye_aug]
+    ds = Hdf5PoseDataset(join(os.environ['DATADIR'],filename), transform=transform, dataclass=Tag.POSE_WITH_LANDMARKS)
     return ds
 
 
@@ -192,41 +206,83 @@ def make_myselfyaw_dataset(transform=None):
     return Hdf5PoseDataset(os.path.join(os.environ['DATADIR'],'myself-yaw.h5'), transform=transform)
 
 
-def make_pose_estimation_loaders(inputsize, batchsize, datasets : Sequence[Id], device='cuda', auglevel = 1):
+def add_constant_transform(key : str, dtype : Type[torch.dtype], value : Any):
+    tensor_value = torch.as_tensor(value, dtype=dtype)
+    def _add_constant_transform_func(batch : Batch):
+        batch = copy(batch)
+        batch[key] = tensor_value
+        return batch
+    return _add_constant_transform_func
+
+
+def _make_roi_augmentations(inputsize : int, stage : str, mode : str, rotation_aug_angle : float = 0.):
+    assert mode in ['extent_to_forehead', 'original', 'landmarks'], f"got {mode}"
+    assert stage in ['train','eval']
+
+    extension_factor = {
+        'original' : 1.1,
+        'extent_to_forehead' : 1.1,
+        'landmarks' : 1.2
+    }[mode]
+    cropping_aug = {
+        'eval': dtr.FocusRoi(inputsize, extension_factor),
+        'train':  dtr.RandomFocusRoi(inputsize, rotation_aug_angle=rotation_aug_angle, extension_factor=extension_factor)
+    }[stage]
+
+    if mode == 'original':
+        # More reasonable approach for second round of runs
+        return [ cropping_aug ]
+    elif mode == 'landmarks':
+        return [
+            dtr.PutRoiFromLandmarks(extend_to_forehead=False),
+            cropping_aug,
+            dtr.PutRoiFromLandmarks(extend_to_forehead=False)
+        ]
+    else:
+        # For first round of runs for publication.
+        return [
+            dtr.PutRoiFromLandmarks(extend_to_forehead=True),
+            cropping_aug
+            # Forgot to regenerate the bounding box
+        ]
+
+
+def make_pose_estimation_loaders(
+        inputsize, 
+        batchsize, 
+        datasets : Sequence[Id], 
+        dataset_weights : Dict[Id,float] = None,
+        use_weights_as_sampling_frequency : bool = True,
+        enable_image_aug : bool = True,
+        rotation_aug_angle : float = 30.,
+        roi_override : str = True
+    ):
     C = transforms.Compose
-    assert auglevel in (0,1,2)
 
     prepare = [
         dtr.batch_to_torch_nchw,
         dtr.offset_points_by_half_pixel, # For when pixels are considered cell centered
     ]
 
-    headpose_train_trafo_eyes = prepare + [
-        dtr.PutRoiFromLandmarks(extend_to_forehead=True),
-        dtr.RandomFocusRoi(inputsize, align_corners=False),
-        partial(dtr.horizontal_flip_and_rot_90, False, 0.01)
-    ]
-    headpose_train_trafo = headpose_train_trafo_eyes 
-    facedet_train_trafo = prepare + [
-        dtr.RandomFocusRoi(inputsize, align_corners=False),
-        partial(dtr.horizontal_flip_and_rot_90, False, 0.01)
+    headpose_train_trafo = prepare + _make_roi_augmentations(inputsize, 'train', roi_override, rotation_aug_angle) + [
+        partial(dtr.horizontal_flip_and_rot_90, 0.01),
+        partial(dtr.normalize_batch),
     ]
 
-    headpose_test_trafo = prepare + [
-        dtr.PutRoiFromLandmarks(extend_to_forehead=True),
-        dtr.FocusRoi(inputsize, 1.2),
+    headpose_test_trafo = prepare + _make_roi_augmentations(inputsize, 'eval', roi_override) + [
+        partial(dtr.normalize_batch)
     ]
-    facedet_test_trafo = prepare + [
-        dtr.FocusRoi(inputsize, 1.2),
-    ]
+
+
+    if dataset_weights is None:
+        dataset_weights = {}
 
     ds_with_sizes = []
-
     train_sets = []
     test_sets = []
-    dataset_weights = []
+    train_sets_weight_list = []
 
-    for id, ds_ctor, sample_weight in [
+    for id, ds_ctor, default_sample_weight in [
         (Id.SYNFACE, make_synface_dataset, 10000), # Synface has 100k frames. But they are synthetic. Not going to weight them that much. So weight is only 10k.
         (Id.BIWI, make_biwi_datasest, 1000),
         # Tons of frames in 300VW but only 200 individuals. Assume 
@@ -240,95 +296,101 @@ def make_pose_estimation_loaders(inputsize, batchsize, datasets : Sequence[Id], 
                 continue
             train = ds_ctor(transform=C(headpose_train_trafo))
             train_sets.append(train)
-            dataset_weights.append(sample_weight)
+            train_sets_weight_list.append(dataset_weights.get(id, default_sample_weight))
             ds_with_sizes.append((id, len(train)))
 
-    for id, ds_ctor, sample_weight in [
+    for id, ds_ctor, default_sample_weight in [
         (Id.WFLW_RELABEL, make_wflw_relabeled_dataset, 10000.) ]:
         if id not in datasets:
             continue
         train, test = ds_ctor(transform=C(headpose_train_trafo), test_transform=C(headpose_test_trafo))
         train_sets.append(train)
         test_sets.append(test)
-        dataset_weights.append(sample_weight)
+        train_sets_weight_list.append(dataset_weights.get(id, default_sample_weight))
         ds_with_sizes.append((id, len(train)))
 
-    if Id.AFLW2k3d in datasets:
+    if (id := Id.AFLW2k3d) in datasets:
         train, _ = make_aflw2k3d_datasets(transform=C(headpose_train_trafo))
         train_sets.append(train)
-        dataset_weights.append(1000.)
+        train_sets_weight_list.append(dataset_weights.get(id, 1000.))
         ds_with_sizes.append((Id.AFLW2k3d, len(train)))
 
-    if Id._300WLP in datasets or Id.REPO_300WLP in datasets:
-        # The main dataset with the proper labels.
-        assert not ((Id._300WLP in datasets) and (Id.REPO_300WLP in datasets))
-        if Id._300WLP in datasets:
+    _300wlp_variants = [ x for x in datasets if x in [Id._300WLP, Id.REPO_300WLP, Id.REPO_300WLP_WO_EXTRA] ]
+    if _300wlp_variants:
+        id, = _300wlp_variants # Error if more than one variant was requested
+        if id == Id._300WLP:
             train = make_300wlp_dataset(transform=C(headpose_train_trafo))
-            weight = 60000.
-            id = Id._300WLP
-        else:
+        elif id == Id.REPO_300WLP_WO_EXTRA :
+            train = make_repro_300wlp_dataset(transform=C(headpose_train_trafo),with_eye_aug=False)
+        elif id == Id.REPO_300WLP: 
             train = make_repro_300wlp_dataset(transform=C(headpose_train_trafo))
-            weight = 60_000.
-            id = Id.REPO_300WLP
+        else:
+            assert False, "Bad dataset request"
         train_sets.append(train)
-        dataset_weights.append(weight)
+        train_sets_weight_list.append(dataset_weights.get(id, 60_000.))
         ds_with_sizes.append((id, len(train)))
-        _, test = make_aflw2k3d_datasets(transform=C(headpose_test_trafo))
-        test_sets.append(test)
 
-    if Id.WIDER in datasets:
+    _, test = make_aflw2k3d_datasets(transform=C(headpose_test_trafo))
+    test_sets.append(test)
+
+    if (id := Id.WIDER) in datasets:
         train, test = make_widerface_datasets()
-        train = dtr.TransformedDataset(train, C(facedet_train_trafo))
-        test = dtr.TransformedDataset(test, C(facedet_test_trafo))
+        train = dtr.TransformedDataset(train, C(headpose_train_trafo))
+        test = dtr.TransformedDataset(test, C(headpose_test_trafo))
         train_sets.append(train)
         test_sets.append(test)
-        dataset_weights.append(10000.)
+        train_sets_weight_list.append(dataset_weights.get(id, 10_000.))
         ds_with_sizes.append((Id.WIDER, len(train)))
 
-    dataset_weights = np.asarray(dataset_weights)    
-    dataset_weights = dataset_weights / np.sum(dataset_weights)
+    train_sets_weight_list = np.asarray(train_sets_weight_list)
+    train_sets_frequencies = train_sets_weight_list
 
     ds_test = ConcatDataset(test_sets)
     ds_train = ConcatDataset(train_sets)
 
-    printed_weights = dataset_weights / np.amax(dataset_weights)*100
-    print (f"Train datasets:\n\t", ",\n\t".join(f"{id_}: {sz}  weight: {w:0.1f}" for (id_,sz),w in zip(ds_with_sizes, printed_weights)))
-    print (f"Train dataset size {len(ds_train)}")
+    if not use_weights_as_sampling_frequency:
+        train_sets_weight_list = train_sets_weight_list / np.amax(train_sets_weight_list)
+        #use_weighting_instead_of_sampling_frequencies:
+        for ds, w in zip(ds_train.datasets, train_sets_weight_list):
+            assert isinstance(ds, (Hdf5PoseDataset, dtr.TransformedDataset))
+            assert isinstance(ds.transform, C)
+            ds.transform.transforms.append(add_constant_transform('dataset_weight', torch.float32, w))
+        train_sets_frequencies = np.ones_like(train_sets_frequencies)/len(train_sets_frequencies)
+    else:
+        train_sets_weight_list = train_sets_weight_list / np.sum(train_sets_weight_list)
+        train_sets_frequencies = train_sets_weight_list
+    print (f"Train datasets:\n\t", ",\n\t".join(f"{id_}: {sz}  weight: {w:0.1f}" for (id_,sz),w in zip(ds_with_sizes, train_sets_weight_list*100)))
+    print (f"Train dataset size {len(ds_train)}. Weights {'are frequencies!' if use_weights_as_sampling_frequency else 'scale the losses!'}")
     print (f"Test set size {len(ds_test)}")
+    del train_sets_weight_list
 
     train_sampler = make_concat_dataset_item_sampler(
         dataset = ds_train,
-        weights = dataset_weights)
+        weights = train_sets_frequencies)
 
-    loader_trafo_test = [ 
-        partial(dtr.normalize_batch, align_corners=False),
+    loader_trafo_test = [
+        partial(dtr.to_device, 'cuda'),
         whiten_batch,
-        partial(dtr.to_device, 'cuda'),
     ]
 
-    image_augs = [
-        dtr.RandomEqualize(p=0.2),
-        dtr.RandomPosterize((4.,6.), p=0.01),
-        dtr.RandomGamma((0.5, 2.0), p = 0.2),
-        dtr.RandomContrast((0.7, 1.5), p = 0.2),
-        dtr.RandomBrightness((0.7, 1.5), p = 0.2),
-    ]
-    if auglevel in  (2, 1, 3):
-        image_augs += [
-            dtr.RandomGaussianBlur(p=0.1, kernel_size=(5,5), sigma=(1.5,1.5)),
-            #dtr.RandomGaussianNoiseWithClipping(std=4./255., p=0.1)
+    if enable_image_aug:
+        image_augs = [
+            dtr.KorniaImageDistortions(
+                dtr.RandomEqualize(p=0.2),
+                dtr.RandomPosterize((4.,6.), p=0.01),
+                dtr.RandomGamma((0.5, 2.0), p = 0.2),
+                dtr.RandomContrast((0.7, 1.5), p = 0.2),
+                dtr.RandomBrightness((0.7, 1.5), p = 0.2),
+                dtr.RandomGaussianBlur(p=0.1, kernel_size=(5,5), sigma=(1.5,1.5)),
+                random_apply = 4),
+            dtr.KorniaImageDistortions(
+                dtr.RandomGaussianNoise(std=4./255., p=0.5),
+                dtr.RandomGaussianNoise(std=16./255., p=0.1),
+            )
         ]
-
-    loader_trafo_train = [
-        partial(dtr.normalize_batch, align_corners=False),
-        partial(dtr.to_device, 'cuda'),
-        dtr.KorniaImageDistortions(*image_augs, random_apply = 4),
-        dtr.KorniaImageDistortions(
-            dtr.RandomGaussianNoise(std=4./255., p=0.5),
-            dtr.RandomGaussianNoise(std=16./255., p=0.1),
-        ),
-        whiten_batch
-    ]
+    else:
+        image_augs = []
+    loader_trafo_train = [ partial(dtr.to_device, 'cuda') ] + image_augs + [ whiten_batch ]
 
     train_loader = dtr.PostprocessingDataLoader(ds_train,
                             unroll_list_of_batches = False,
@@ -337,50 +399,56 @@ def make_pose_estimation_loaders(inputsize, batchsize, datasets : Sequence[Id], 
                             num_workers = utils.num_workers(),
                             postprocess = transforms.Compose(loader_trafo_train),
                             collate_fn = Batch.Collation(divide_by_tag=True),
-                            worker_init_fn = seed_worker)
+                            worker_init_fn = seed_worker,
+                            pin_memory = True)
     test_loader = dtr.PostprocessingDataLoader(ds_test,
                             unroll_list_of_batches = True,
                             batch_size = batchsize*2,
                             num_workers = utils.num_workers(),
                             collate_fn = Batch.Collation(divide_by_tag=True),
                             postprocess = transforms.Compose(loader_trafo_test),
+                            pin_memory = True,
                             worker_init_fn = seed_worker)
 
     return train_loader, test_loader, len(ds_train)
 
 
-def make_validation_loader(name, order = None): # inputsize = 129, device='cpu', view_expansion : float = 1.2, auto_level = False):
+def make_validation_loader(name, order = None, use_head_roi = True, num_workers=None):
     test_trafo = transforms.Compose([
-        # dtr.batch_to_torch_nchw,
-        #dtr.to_tensor,
         dtr.offset_points_by_half_pixel, # For when pixels are considered grid cell centers
-        dtr.PutRoiFromLandmarks(extend_to_forehead=True),
-        # dtr.FocusRoi(inputsize, view_expansion),
+        dtr.PutRoiFromLandmarks(extend_to_forehead=use_head_roi)
     ])
-    # if auto_level:
-    #     test_trafo.transforms.append(dtr.KorniaImageDistortions(dtr.RandomEqualize(p=1.0)))
-
     if name == 'aflw2k3d':
         ds = make_aflw2k3d_dataset(transform=test_trafo)
     elif name == 'aflw2k3d_grimaces':
         ds = make_aflw2k3d_grimaces_dataset(transform=test_trafo)
+    elif name == 'aflw2k3d_closedeyes':
+        ds = make_aflw2k3d_closedeyes_dataset(transform=test_trafo)
     elif name == 'myself':
         ds = make_myself_dataset(transform=test_trafo)
-    elif name == 'myself-yaw':
+    elif name == 'myself_yaw':
         ds = make_myselfyaw_dataset(transform=test_trafo)
     elif name == 'biwi':
         ds = make_biwi_datasest(transform=test_trafo)
+    elif name == 'repro_300_wlp':
+        ds = make_repro_300wlp_dataset(transform=test_trafo)
+    elif name == 'wflw_lp':
+        ds = make_wflw_lp_dataset(transform=test_trafo)
+    elif name == 'lapa_megaface_lp':
+        ds = make_lapa_megaface_lp_dataset(transform=test_trafo)
     else:
-        assert False, "Not implemented"
+        assert False, f"Unknown dataset {name}"
 
     if order is not None:
         ds = Subset(ds, order)
+    if num_workers is None:
+        num_workers = utils.num_workers()
 
     return dtr.PostprocessingDataLoader(
         ds, 
-        batch_size=2,
+        batch_size=32,
         shuffle=False, 
-        num_workers = utils.num_workers(),
+        num_workers = num_workers,
         postprocess = None, 
         collate_fn = lambda samples: samples,
         unroll_list_of_batches = True)

@@ -1,6 +1,10 @@
 from trackertraincode.datatransformation.affinetrafo import (
     position_normalization, position_unnormalization, 
-    apply_affine2d)
+    apply_affine2d,
+    affine_transform_image_torch,
+    affine_transform_image_cv2,
+    croprescale_image_torch,
+    croprescale_image_cv2)
 
 from trackertraincode.datatransformation.imageaugment import (
     KorniaImageDistortions,
@@ -35,7 +39,6 @@ from trackertraincode.datatransformation.normalization import (
     normalize_batch,
     unnormalize_batch,
     offset_points_by_half_pixel,
-    correct_roi_for_aligned_corners,
     batch_to_torch_nchw
 )
 
@@ -54,7 +57,6 @@ from trackertraincode.datatransformation.otheraugment import (
     RandomFocusRoi,
     FocusRoi,
     RoiFocusRandomizationParameters,
-    ScalingMode,
     horizontal_flip_and_rot_90
 )
 

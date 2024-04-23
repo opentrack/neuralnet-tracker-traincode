@@ -1,6 +1,12 @@
 #!/bin/bash
 
-python scripts/train_poseestimator.py --lr 1.e-3 --epochs 1500 --ds "repro_300_wlp+synface+lapa_megaface_lp+wflw_lp" --auglevel 2 \
+#python -m cProfile -o run.prof 
+
+python scripts/train_poseestimator.py --lr 1.e-3 --epochs 1500 --ds "repro_300_wlp+lapa_megaface_lp+wflw_lp+synface" \
     --save-plot train.pdf \
     --with-swa \
-    --backbone resnet18
+    --with-nll-loss \
+    --backbone mobilenetv1
+
+#--roi-override original
+# +synface

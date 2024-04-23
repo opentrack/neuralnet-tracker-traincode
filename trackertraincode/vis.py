@@ -4,7 +4,7 @@ import cv2
 import torch
 from matplotlib import pyplot
 from matplotlib.widgets import Button
-from typing import Tuple, Union
+from typing import Tuple, Union, Optional
 
 import trimesh
 import pyrender
@@ -13,7 +13,8 @@ from trackertraincode.datasets.batch import Batch
 from trackertraincode.datatransformation import _ensure_image_nhwc
 from trackertraincode.facemodel.bfm import BFMModel
 
-
+PRED_COLOR=(0,0,255)
+GT_COLOR=(0,200,0)
 
 def _with3channels_hwc(img : np.ndarray):
     assert len(img.shape) == 3
@@ -23,7 +24,7 @@ def _with3channels_hwc(img : np.ndarray):
     return img
 
 
-def draw_axis(img, rot, tdx=None, tdy=None, size = 100, brgt = 255, lw=3):
+def draw_axis(img, rot, tdx=None, tdy=None, size = 100, brgt = 255, lw=3, color : Optional[tuple[int,int,int]] = None):
     if isinstance(rot, Rotation):
         rot = Rotation.as_matrix(rot)
     elif isinstance(rot, (np.ndarray, torch.Tensor)) and rot.shape==(4,):
@@ -41,39 +42,51 @@ def draw_axis(img, rot, tdx=None, tdy=None, size = 100, brgt = 255, lw=3):
     x1, x2, x3 = rot[0,:] + tdx
     y1, y2, y3 = rot[1,:] + tdy
 
-    cv2.line(img, (int(tdx), int(tdy)), (int(x1),int(y1)),(brgt,0,0),lw)
-    cv2.line(img, (int(tdx), int(tdy)), (int(x2),int(y2)),(0,brgt,0),lw)
-    cv2.line(img, (int(tdx), int(tdy)), (int(x3),int(y3)),(0,0,brgt),lw)
+    if color is None:
+        xcolor = (brgt,0,0)
+        ycolor = (0,brgt,0)
+        zcolor = (0,0,brgt)
+    else:
+        r,g,b = color
+        zcolor = ycolor = xcolor = (brgt*r//255,brgt*g//255,brgt*b//255)
+
+    cv2.line(img, (int(tdx), int(tdy)), (int(x1),int(y1)),xcolor,lw)
+    cv2.line(img, (int(tdx), int(tdy)), (int(x2),int(y2)),ycolor,lw)
+    cv2.line(img, (int(tdx), int(tdy)), (int(x3),int(y3)),zcolor,lw)
 
     return img
 
 
-def draw_points3d(img, pt3d, labels=True, brightness=255):
+def draw_points3d(img, pt3d, labels=True, is_pred=False):
     assert pt3d.shape[-1] in (2,3)
-    g = brightness
-    b = r = brightness//2
+    if is_pred:
+        r,g,b = PRED_COLOR
+    else:
+        r,g,b = GT_COLOR
     for i, p in enumerate(pt3d[:,:2]):
         p = tuple(p.astype(int))
         if labels:
             cv2.putText(img, str(i), (p[0]+2,p[1]), cv2.FONT_HERSHEY_SIMPLEX,
                     0.3, (255,255,255), 1, cv2.LINE_AA)
-        cv2.circle(img, p, 2, (255,255,255), -1)
-        cv2.circle(img, p, 1, (r,g,b), -1)
+        cv2.circle(img, p, 4, (255,255,255), -1)
+        cv2.circle(img, p, 3, (r,g,b), -1)
 
 
 def draw_roi(img, roi, color, linewidth):
     cv2.rectangle(img, (round(roi[0]),round(roi[1])), (round(roi[2]),round(roi[3])), color, linewidth)
 
 
-def draw_pose(img, sample, brightness, linewidth):
+def draw_pose(img, sample, is_prediction):
     rot = sample['pose']
     x, y, s = sample['coord']
-    draw_axis(img, rot, tdx = x, tdy = y, brgt=brightness, lw=linewidth)
+    color = PRED_COLOR if is_prediction else GT_COLOR
+    linewidth = 3
+    draw_axis(img, rot, tdx = x, tdy = y, brgt=255, lw=linewidth, color=color)
     if s <= 0.:
         print (f"Error, head size {s} not positive!")
         print (sample)
     else:
-        cv2.circle(img, (int(x),int(y)), int(s), (brightness,brightness,0), linewidth)
+        cv2.circle(img, (int(x),int(y)), int(s), color, linewidth)
 
 
 def plot3dlandmarks(ax, keypts):
@@ -123,27 +136,28 @@ def draw_semseg_logits(semseg : np.ndarray):
 
 
 def _draw_sample(img : np.ndarray, sample : Union[Batch,dict], is_prediction : bool, labels : bool = True):
-    linewidth = 1 if is_prediction else 2
-    brightness = 255 if is_prediction else 128
+    linewidth = 3 #1 if is_prediction else 2
+    #brightness = 255 if is_prediction else 128
     if 'seg_image' in sample:
         semseg = draw_semseg_class_indices(sample['seg_image'])
         img //= 2
         img += semseg // 2
     if 'pose' in sample and 'coord' in sample:
-        draw_pose(img, sample, brightness, linewidth)
+        draw_pose(img, sample, is_prediction)
     if 'roi' in sample:
-        color = ((0,brightness,0) if sample['hasface']>0.5 else (brightness,0,0)) \
-                if 'hasface' in sample else (brightness,0,brightness)
+        #color = ((0,brightness,0) if sample['hasface']>0.5 else (brightness,0,0)) \
+        #        if 'hasface' in sample else (brightness,0,brightness)
+        color = PRED_COLOR if is_prediction else GT_COLOR
         roi = sample['roi']
         draw_roi(img, roi, color, linewidth)
     if 'hasface' in sample:
-        maybe_draw_no_face_indication(img, sample, brightness, linewidth)
+        maybe_draw_no_face_indication(img, sample, 255, linewidth)
     if 'pt3d_68' in sample:
         draw_points3d(img, sample['pt3d_68'], 
-            labels, brightness)
+            labels, is_pred=is_prediction)
     if 'pt2d_68' in sample:
         draw_points3d(img, sample['pt2d_68'], 
-            labels, brightness)
+            labels, is_pred=is_prediction)
 
 
 def draw_prediction(sample_pred : Tuple[Batch,dict]):

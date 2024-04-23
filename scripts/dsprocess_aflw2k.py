@@ -53,6 +53,7 @@ def read_data(zf, matfile):
     pt3d = depth_centered_keypoints(data['pt3d_68'])
     pt3d[2] *= -1
 
+    # There is data['roi'], but the coordinates seem to be outside of the face region. Very odd.
     x0, y0, _ = np.amin(pt3d, axis=1)
     x1, y1, _ = np.amax(pt3d, axis=1)
     roi = np.array([x0, y0, x1, y1])

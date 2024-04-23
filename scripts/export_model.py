@@ -121,13 +121,13 @@ def print_io_info(ort_session):
         print (f"\t{node.name}, {node.shape}, {node.type}")
 
 
-def compare_network_outputs(torchmodel, ort_session : ort.InferenceSession, inputs):
+def compare_network_outputs(torchmodel, ort_session, inputs):
     torch_out = torchmodel(*inputs)
     outputs = ort_session.run(None, {
         k:v.detach().numpy() for k,v in zip(torchmodel.input_names, inputs)
     })
     # Outputs better be the same ...
-    for a, b, name in zip(torch_out, outputs, torchmodel.input_names):
+    for a, b, name in zip(torch_out, outputs, torchmodel.output_names):
         a = a.detach().numpy()
         if not np.allclose(a, b, 1.e-4):
             delta = np.amax(np.abs(a - b))
@@ -173,9 +173,8 @@ def convert_posemodel_onnx(net : nn.Module, filename, for_opentrack=True):
         verbose=False)
 
     onnxmodel = onnx.load(destination)
-    if for_opentrack:
-        onnxmodel.doc_string = 'Head pose prediction'
-        onnxmodel.model_version = 3  # This must be an integer or long.
+    onnxmodel.doc_string = 'Head pose prediction'
+    onnxmodel.model_version = 4  # This must be an integer or long.
     
     onnx.checker.check_model(onnxmodel)
     

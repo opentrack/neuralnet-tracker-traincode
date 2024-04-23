@@ -32,7 +32,7 @@ def aflw_rotation_conversion(pitch, yaw, roll) -> Rotation:
     '''Euler angles to Rotation objects, used for AFLW and 300W-LP data'''
     # It's the result of endless trial and error. Don't ask ...
     # Euler angles suck.
-    rot : Rotation = Rotation.from_euler('XYZ', [pitch,-yaw,roll])
+    rot : Rotation = Rotation.from_euler('XYZ', np.asarray([pitch,-yaw,roll]).T)
     M = rot.as_matrix()
     P = np.asarray([
         [ 1, 0, 0 ],
@@ -45,13 +45,21 @@ def aflw_rotation_conversion(pitch, yaw, roll) -> Rotation:
 
 
 def inv_aflw_rotation_conversion(rot : Rotation):
-    '''Rotation object to Euler angles for AFLW and 300W-LP data'''
-    # Flip x-axis
-    x, y, z = rot.as_matrix().T
-    x, y, z = np.array([-x, y, z]).T
-    m = np.array([-x, y, z])
-    p,y,r = Rotation.from_matrix(m).as_euler('XYZ')
-    return np.asarray([-p,-y,-r])
+    '''Rotation object to Euler angles for AFLW and 300W-LP data
+    
+        Returns:
+            Batch x (Pitch,Yaw,Roll)
+    '''
+    P = np.asarray([
+        [ 1, 0, 0 ],
+        [ 0, 1, 0 ],
+        [ 0, 0, -1 ]
+    ])
+    M = P @ rot.as_matrix() @ P.T
+    rot = Rotation.from_matrix(M)
+    euler = rot.as_euler('XYZ')
+    euler *= np.asarray([1,-1,1])
+    return euler
 
 
 def angle_errors(euler1, euler2):
@@ -135,11 +143,3 @@ def list_of_dicts_to_dict_of_lists(lod : List[Dict[Any,Any]]) -> Dict[Any, List[
         return {}
     first = next(iter(lod))
     return { k:[items[k] for items in lod] for k in first.keys() }
-
-# TODO: Tests for this and the aflw rotation conversion
-if __name__ == '__main__':
-    R1 = Rotation.random()
-    t1 = np.random.rand(3)
-    inv = affine3d_inv((R1,t1))
-    R2, t2 = affine3d_chain((R1,t1), inv)
-    print(R2.as_matrix(),t2)

@@ -223,6 +223,19 @@ def _test_local_to_global_transform_offset():
     print (pred_c, expect_c, expect_scale)
 
 
+def quaternion_from_features(z : Tensor):
+    '''
+    Returns:
+        (quaternions, unnormalized quaternions)
+    '''
+    quats_unnormalized = torch.empty_like(z)
+    # The real component can be positive because -q is the same rotation as q.
+    # Seems easier to learn like so.
+    quats_unnormalized[...,torchquaternion.iw] = smoothclip0(z[...,torchquaternion.iw])
+    quats_unnormalized[...,torchquaternion.iijk] = z[...,torchquaternion.iijk]
+    quats = torchquaternion.normalized(quats_unnormalized)
+    return quats, quats_unnormalized
+
 
 if __name__ == '__main__':
     _test_local_to_global_transform_offset()

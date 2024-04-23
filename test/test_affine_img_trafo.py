@@ -12,7 +12,7 @@ import trackertraincode.datatransformation as  dtr
 from trackertraincode.datatransformation.affinetrafo import (
     transform_image_torch, 
     transform_image_pil, 
-    transform_image_opencv)
+    croprescale_image_cv2)
 
 from trackertraincode.datasets.batch import Batch, Metadata
 from trackertraincode.neuralnets.affine2d import Affine2d
@@ -241,7 +241,7 @@ def test_transform_image_only(scaling_mode, dt):
     else:
         new_img = {
             dtr.ScalingMode.PIL_HAMMING_WINDOW : transform_image_pil,
-            dtr.ScalingMode.OPENCV_AREA : transform_image_opencv
+            dtr.ScalingMode.OPENCV_AREA : croprescale_image_cv2
         }[scaling_mode](img, roi, 100, dtr.FieldCategory.image)
 
     nonzeroval, zero, tol = {

@@ -1,6 +1,6 @@
 import torch
 from torch.nn import functional as F
-from typing import Optional, Union
+from typing import Optional, Union, Tuple
 
 from trackertraincode.neuralnets.math import matvecmul
 
@@ -153,6 +153,11 @@ class Affine2d(object):
     def size(self, i):
         return self.m.size(i)
 
+    @property
+    def shape(self):
+        '''Returns only the "batch" part i.e. excluding the last two matrix dimensions.'''
+        return self.m.shape[:-2]
+
     def __matmul__(self, other):
         # TODO: update Pytorch and use broadcast_shapes
         tensor_with_right_shape, _ = torch.broadcast_tensors(self.m, other.m)
@@ -183,13 +188,14 @@ class Affine2d(object):
     def __getitem__(self, val):
         return Affine2d(self.m.__getitem__(val))
 
+    # TODO: overloads for tuple and variable argument list
     def reshape(self, shape):
         return Affine2d(self.m.reshape(shape+(2,3)))
     
     def expand(self, *shape):
         return Affine2d(self.m.expand(*shape,-1,-1))
 
-    def repeat(self, size):
+    def repeat(self, size : Tuple[int,...]):
         return Affine2d(self.m.repeat(size+(1,1)))
 
     def view(self, *shape):

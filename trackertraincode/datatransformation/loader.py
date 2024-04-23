@@ -123,5 +123,5 @@ class WhitelistKeys(object):
 def to_device(device : str, batch : Batch):
     batch = copy(batch)
     for k, v in batch.items():
-        batch[k] = v.to(device)
+        batch[k] = v.to(device, non_blocking=True)
     return batch

@@ -1,6 +1,6 @@
 import itertools
 import math
-from typing import Union, Optional, List, Tuple, Dict
+from typing import Union, Optional, List, Tuple, Dict, Any
 
 import torch
 import torch.nn as nn
@@ -13,7 +13,8 @@ from trackertraincode.neuralnets.modelcomponents import (
     rigid_transformation_25d, 
     DeformableHeadKeypoints, 
     CenterOfMassAndStd,
-    LocalToGlobalCoordinateOffset
+    LocalToGlobalCoordinateOffset,
+    quaternion_from_features
 )
 
 import trackertraincode.neuralnets.negloglikelihood as NLL
@@ -105,7 +106,11 @@ class Landmarks3dOutput(nn.Module):
         self.enable_uncertainty = enable_uncertainty
         self.deformablekeypoints = DeformableHeadKeypoints(40, 10)
         self.shapenet = nn.Linear(num_features, self.deformablekeypoints.num_eigvecs)
-        self.scales = NLL.UncorrelatedVarianceParameter(68, torch.full((68,), fill_value=0.3))
+        if self.enable_uncertainty:
+            # pointscales = NLL.FeaturesAsUncorrelatedVariance(num_features, 68, torch.full((68,)))
+            # shapescales = NLL.FeaturesAsUncorrelatedVariance(num_features, 50, torch.full((50,)))
+            self.point_distrib_scales = NLL.UncorrelatedVarianceParameter(68)
+            self.shape_distrib_scales = NLL.UncorrelatedVarianceParameter(50)
 
     def forward(self, z, quats, coords) -> Dict[str, Tensor]:
         shapeparam = self.shapenet(z)
@@ -118,7 +123,8 @@ class Landmarks3dOutput(nn.Module):
         out = { 'pt3d_68' : pt3d_68, 'shapeparam' : shapeparam }
         
         if self.enable_uncertainty:
-            out.update({ 'pt3d_68_scales' : self.scales()[None,:,None].expand_as(pt3d_68) })
+            out.update({ 'pt3d_68_scales' : self.point_distrib_scales()[None,:,None].expand_as(pt3d_68) })
+            out.update({ 'shapeparam_scales' : self.shape_distrib_scales()[None,:].expand_as(shapeparam) })
 
         return out
 
@@ -128,19 +134,14 @@ class DirectQuaternionWithNormalization(nn.Module):
         super().__init__()
         self.enable_uncertainty = enable_uncertainty
         self.linear = nn.Linear(num_features, 4, bias=True)
-        self.linear.bias.data[torchquaternion.iw] = inv_smoothclip0(0.1)
+        self.linear.bias.data[torchquaternion.iw] = inv_smoothclip0(torch.as_tensor(0.1))
         if enable_uncertainty:
-            covfactor = NLL.FeaturesAsTriangularCovFactor(3)
-            self.uncertainty_net = nn.Sequential(
-                nn.Linear(num_features, covfactor.num_features, bias=False),
-                covfactor)
+            self.uncertainty_net = NLL.FeaturesAsTriangularCovFactor(
+                num_features, 3)
     
     def forward(self, x) -> Dict[str, Tensor]:
         z = self.linear(x)
-        quats_unnormalized = torch.empty_like(z)
-        quats_unnormalized[...,torchquaternion.iw] = smoothclip0(z[...,torchquaternion.iw])
-        quats_unnormalized[...,torchquaternion.iijk] = z[...,torchquaternion.iijk]
-        quats = torchquaternion.normalized(quats_unnormalized)
+        quats, quats_unnormalized = quaternion_from_features(z)
         out = {
             'unnormalized_quat' : quats_unnormalized,
             'pose' : quats, 
@@ -148,7 +149,7 @@ class DirectQuaternionWithNormalization(nn.Module):
         if self.enable_uncertainty:
             scales = self.uncertainty_net(x)
             out.update({
-                'pose_scales_tril' : scales
+                'pose_scales_tril' : scales,
             })
         return out
 
@@ -160,7 +161,7 @@ class BoundingBox(nn.Module):
         self.linear = nn.Linear(num_features, 4)
         self.linear.bias.data[...] = torch.tensor([0.0, 0.0, 0.5, 0.5])
         if enable_uncertainty:
-            self.scales = NLL.UncorrelatedVarianceParameter(4, torch.full((4,),fill_value=0.1))
+            self.scales = NLL.UncorrelatedVarianceParameter(4)
 
     def forward(self, x : Tensor) -> Dict[str, Tensor]:
         z = self.linear(x)
@@ -186,10 +187,9 @@ class PositionSizeOutput(nn.Module):
         self.linear_size = nn.Linear(num_features, 1)
         self.linear_size.bias.data.fill_(0.5)
         if enable_uncertainty:
-            self.scales = nn.Sequential(
-                nn.Linear(num_features, 4, bias=False),
-                NLL.FeaturesAsUncorrelatedVariance(3, torch.tensor([0.5,0.5,0.5])))
-    
+            #self.scales = NLL.FeaturesAsUncorrelatedVariance(num_features, 3)
+            self.scales = NLL.FeaturesAsTriangularCovFactor(num_features, 3)
+
     def forward(self, x : Tensor):
         coord = torch.cat([
             self.linear_xy(x),
@@ -201,15 +201,15 @@ class PositionSizeOutput(nn.Module):
         return out
 
 
-def create_pose_estimator_backbone(config : str):
+def create_pose_estimator_backbone(config : str, args : Dict[str,Any]):
     if config == 'mobilenetv1':
-        return MobileNet(input_channel=1, num_classes=None)
+        return MobileNet(input_channel=1, num_classes=None, **args)
     elif config == 'resnet18':
-        return resnet18()
+        return resnet18(**args)
     elif config.startswith('efficientnet_'):
         kind = config[len('efficientnet_'):]
         assert kind in 'b0,b1,b2,b3,b4'.split(',')
-        return EfficientNetBackbone(kind=kind, input_channels=1, stochastic_depth_prob=0.1)
+        return EfficientNetBackbone(kind=kind, input_channels=1, stochastic_depth_prob=0.1, **args)
     else:
         assert f"Unsupported backbone {config}"
 
@@ -218,28 +218,27 @@ class NetworkWithPointHead(nn.Module):
     def __init__(
             self, enable_point_head=True, 
             enable_face_detector=False, 
-            use_local_pose_offset=True, 
             config='mobilenetv1', 
-            enable_uncertainty=False):
+            enable_uncertainty=False,
+            dropout_prob = 0.5,
+            backbone_args = None):
         super(NetworkWithPointHead, self).__init__()
         self.enable_point_head = enable_point_head
         self.enable_face_detector = enable_face_detector
-        self.use_local_pose_offset = use_local_pose_offset
         self.finetune = False
         self.config = config
         self.enable_uncertainty = enable_uncertainty
-
+        if backbone_args is None:
+            backbone_args = {}
         self._input_resolution = (129, 97)
 
-        self.convnet = create_pose_estimator_backbone(config)
+        self.convnet = create_pose_estimator_backbone(config, backbone_args)
         num_features = self.convnet.num_features
-        self.dropout = nn.Dropout(0.5)
+        self.dropout = nn.Dropout(dropout_prob)
 
         self.boxnet = BoundingBox(num_features, enable_uncertainty)
         self.posnet = PositionSizeOutput(num_features, enable_uncertainty)
         self.quatnet = DirectQuaternionWithNormalization(num_features, enable_uncertainty)
-        self.local_pose_offset = LocalToGlobalCoordinateOffset()
-        self.local_pose_offset_kpts = LocalToGlobalCoordinateOffset()
         if enable_point_head:
             self.landmarks = Landmarks3dOutput(num_features, enable_uncertainty)
         if enable_face_detector:
@@ -276,23 +275,10 @@ class NetworkWithPointHead(nn.Module):
 
         out.update(self.posnet(x))
         out.update(self.quatnet(x))
-
-        if self.use_local_pose_offset:
-            out.update({
-                'hidden_pose' : out['pose'],
-                'hidden_coord' : out['coord']
-            })
-            quats, coords = self.local_pose_offset(out.pop('pose'), out.pop('coord'))
-            out.update({
-                'pose' : quats,
-                'coord' : coords
-            })
         
         quats, coords = out['pose'], out['coord']
 
         if self.enable_point_head:
-            if self.use_local_pose_offset:
-                quats, coords = self.local_pose_offset_kpts(out['hidden_pose'], out['hidden_coord'])
             out.update(self.landmarks(x, quats, coords))
 
         if self.enable_face_detector:

@@ -14,7 +14,7 @@ import tqdm
 
 from trackertraincode.datasets.preprocessing import imdecode, compute_keypoints, depth_centered_keypoints, \
     move_aflw_head_center_to_between_eyes, sanity_check_landmarks, \
-    get_3ddfa_shape_parameters, load_shape_components
+    get_3ddfa_shape_parameters, load_shape_components, head_bbox_from_keypoints
 from trackertraincode.datasets.dshdf5pose import create_pose_dataset, FieldCategory
 from trackertraincode.utils import aflw_rotation_conversion
 
@@ -86,10 +86,13 @@ def read_sample(zf, matfile):
     assert (pt3d.shape == (3,68)), f"Bad shape: {pt3d.shape}"
     pt3d = depth_centered_keypoints(pt3d)
 
-    # The matlab file contains a bounding box which is however way too big for the image size.
-    x0, y0, _ = np.amin(pt3d, axis=1)
-    x1, y1, _ = np.amax(pt3d, axis=1)
-    roi = np.array([x0, y0, x1, y1])
+    if 0:
+        # The matlab file contains a bounding box which is however way too big for the image size.
+        x0, y0, _ = np.amin(pt3d, axis=1)
+        x1, y1, _ = np.amax(pt3d, axis=1)
+        roi = np.array([x0, y0, x1, y1])
+    else:
+        roi = head_bbox_from_keypoints(np.ascontiguousarray(pt3d.T))
 
     sanity_check_landmarks(coord, rot, pt3d, (f_shp, f_exp), 0.2, img)
 

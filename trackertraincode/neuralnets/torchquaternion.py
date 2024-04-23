@@ -147,8 +147,11 @@ def distance(a, b):
     #return 1. - torch.abs(torch.sum(a * b, dim=-1))
     #return torch.min(torch.norm(a-b,p=2,dim=-1), torch.norm(a+b,p=2,dim=-1))
 
+
 def geodesicdistance(a,b):
-    return 2.*torch.acos(torch.sum(a * b, dim=-1).abs().min(torch.as_tensor(1.,dtype=a.dtype)))
+    # Numerically unstable due to infinite gradients at -1 and 1???
+    #return torch.arccos((2.*torch.sum(a * b, dim=-1).square() - 1).clip(-1.,1.))
+    return rotation_delta(a, b).norm(dim=-1)
 
 
 def quat_average(quats):

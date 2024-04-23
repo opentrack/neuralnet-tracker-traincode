@@ -13,10 +13,12 @@ Modified By cleardusk
 Even more modified by M Welter
 """
 
+from typing import Optional
 import math
 import torch.nn as nn
 import torch.nn.functional as F
 import torch
+import dataclasses
 
 # In this paper "Making Convolutional Networks Shift-Invariant Again" from 2019 it was shown that it
 # can be beneficial to blur the feature map before downsampling. The idea is to filter high frequency
@@ -31,66 +33,35 @@ ActivationFunc = nn.ReLU
 __all__ = ['MobileNet', 'InvMobileNet']
 
 
-class SequeezeAndExcitation(nn.Module):
-    # https://arxiv.org/pdf/1709.01507.pdf
-
-    def __init__(self, num_channels, middle_channels, momentum):
-        super(SequeezeAndExcitation,self).__init__()
-        assert middle_channels > 0
-        self.layers = nn.Sequential(
-            nn.AdaptiveAvgPool2d((1,1)),
-            nn.Conv2d(num_channels, middle_channels, 1, bias=False),
-            NormalizationLayer(middle_channels, momentum=momentum),
-            ActivationFunc(inplace=True),
-            nn.Conv2d(middle_channels, num_channels, 1, bias=False),
-            NormalizationLayer(num_channels, momentum=momentum),
-        )
-
-    def forward(self, x):
-        y = self.layers(x)
-        y = torch.sigmoid(y)
-        return x.mul(y)
-
-
 class DepthWiseBlock(nn.Module):
-    def __init__(self, inplanes, planes, stride=1, momentum=0.1, sae = False, Activation = nn.ReLU, stochastic_depth=None):
+    def __init__(self, inplanes, planes, stride=1, momentum=0.1, stochastic_depth=None, use_blurpool=True):
         super(DepthWiseBlock, self).__init__()
         assert stride in (1,2)
         self.inplanes, self.planes = inplanes, planes = int(inplanes), int(planes)
-        self.blur_pool = BlurPool2D(kernel_size=3,stride=2, channels=inplanes) if stride==2 else None
-        self.conv_dw = nn.Conv2d(inplanes, inplanes, kernel_size=3, padding=1, stride=1, groups=inplanes,
-                                 bias=False)
+        if stride == 2 and use_blurpool:
+            self.conv_dw = nn.Sequential(
+                BlurPool2D(kernel_size=3,stride=2, channels=inplanes),
+                nn.Conv2d(inplanes, inplanes, kernel_size=3, padding=1, stride=1, groups=inplanes, bias=False))
+        else:
+            self.conv_dw = nn.Conv2d(inplanes, inplanes, kernel_size=3, padding=1, stride=stride, groups=inplanes, bias=False)
         self.bn_dw = NormalizationLayer(inplanes, momentum=momentum)
         self.conv_sep = nn.Conv2d(inplanes, planes, kernel_size=1, stride=1, padding=0, bias=False)
         self.bn_sep = NormalizationLayer(planes, momentum=momentum)
-        self.relu = Activation(inplace=True)
-        # if stride != 1 or inplanes != planes:
-        #     self.skip_layer = nn.Conv2d(inplanes, planes, kernel_size=1, stride=stride, padding=0, bias=False)
-        # else:
-        #     self.skip_layer = nn.Identity()
+        self.relu = nn.ReLU(inplace=True)
         self.skip_connection = not (stride != 1 or inplanes != planes)
-        sae_channels = planes // 16
-        sae = sae and sae_channels > 1
-        self.sae = SequeezeAndExcitation(inplanes, sae_channels, momentum) if sae else None
         self.stochastic_depth = None
         if stochastic_depth:
             self.stochastic_depth = stochastic_depth
 
     def forward(self, x):
         out = x
-        
-        if self.blur_pool is not None:
-            out = self.blur_pool(out)
-        
+
         out = self.conv_dw(out)
         out = self.bn_dw(out)
         out = self.relu(out)
         
         out = self.conv_sep(out)
         
-        if self.sae is not None:
-            out = self.sae(out)
-
         out = self.bn_sep(out)
         
         if self.skip_connection:
@@ -103,7 +74,7 @@ class DepthWiseBlock(nn.Module):
 
 
 class MobileNet(nn.Module):
-    def __init__(self, num_classes=1000, widen_factor=1.0, input_channel=1, momentum=0.1, dropout = 0.0, sae=False, return_only_featuremap=False):
+    def __init__(self, num_classes=1000, widen_factor=1.0, input_channel=1, momentum=0.1, dropout = 0.0, use_blurpool=True, return_only_featuremap=False):
         """ Constructor
         Args:
             widen_factor: config of widen_factor
@@ -111,29 +82,27 @@ class MobileNet(nn.Module):
         """
         super(MobileNet, self).__init__()
 
-        block = DepthWiseBlock
+        def block(inplanes, planes, stride=1):
+            return DepthWiseBlock(inplanes*widen_factor, planes*widen_factor, stride=stride, momentum=momentum, use_blurpool=use_blurpool)
+
         self.conv1 = nn.Conv2d(input_channel, int(32 * widen_factor), kernel_size=5, stride=2, padding=2,
                                bias=False)
         self.bn1 = NormalizationLayer(int(32 * widen_factor), momentum=momentum)
         self.relu = ActivationFunc(inplace=True)
 
-        self.dw2_1 = block(32 * widen_factor, 64 * widen_factor, momentum=momentum)
-        self.dw2_2 = block(64 * widen_factor, 128 * widen_factor, stride=2, momentum=momentum)
-
-        self.dw3_1 = block(128 * widen_factor, 128 * widen_factor, sae=sae, momentum=momentum)
-        self.dw3_2 = block(128 * widen_factor, 256 * widen_factor, stride=2, momentum=momentum)
-
-        self.dw4_1 = block(256 * widen_factor, 256 * widen_factor, sae=sae, momentum=momentum)
-        self.dw4_2 = block(256 * widen_factor, 512 * widen_factor, stride=2, momentum=momentum)
-
-        self.dw5_1 = block(512 * widen_factor, 512 * widen_factor, momentum=momentum)
-        self.dw5_2 = block(512 * widen_factor, 512 * widen_factor, momentum=momentum)
-        self.dw5_3 = block(512 * widen_factor, 512 * widen_factor, momentum=momentum)
-        self.dw5_4 = block(512 * widen_factor, 512 * widen_factor, momentum=momentum)
-        self.dw5_5 = block(512 * widen_factor, 512 * widen_factor, sae=sae, momentum=momentum)
-        self.dw5_6 = block(512 * widen_factor, 1024 * widen_factor, stride=2, momentum=momentum)
-
-        self.dw6 = block(1024 * widen_factor, 1024 * widen_factor, sae=sae, momentum=momentum)
+        self.dw2_1 = block(32  , 64)
+        self.dw2_2 = block(64  , 128, stride=2)
+        self.dw3_1 = block(128 , 128)
+        self.dw3_2 = block(128 , 256, stride=2)
+        self.dw4_1 = block(256 , 256)
+        self.dw4_2 = block(256 , 512, stride=2)
+        self.dw5_1 = block(512 , 512)
+        self.dw5_2 = block(512 , 512)
+        self.dw5_3 = block(512 , 512)
+        self.dw5_4 = block(512 , 512)
+        self.dw5_5 = block(512 , 512)
+        self.dw5_6 = block(512 , 1024, stride=2)
+        self.dw6   = block(1024, 1024)
 
         if not return_only_featuremap:
             self.avgpool = nn.AdaptiveAvgPool2d(1)

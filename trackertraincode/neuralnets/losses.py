@@ -1,4 +1,5 @@
 import enum
+from typing import Literal, Mapping, Any
 from os.path import dirname, join
 import numpy as np
 import torch
@@ -10,69 +11,68 @@ from trackertraincode.neuralnets.gmm import unpickle_scipy_gmm
 import trackertraincode.neuralnets.torchquaternion as torchquaternion
 
 
-def rwing(x, omega=0.1, epsilon=0.02, r = 0.01, reduction=None):
-    x_r = torch.clamp(x - r, 0., omega-r)
-    logterm = omega * torch.log(1 + x_r / epsilon)
-    linearterm = torch.maximum(x - omega, x.new_zeros(()))
-    loss = logterm + linearterm
-    if reduction=='mean':
-        loss = torch.mean(loss)
-    elif reduction == 'sum':
-        loss = torch.sum(loss)
-    return loss
+SimpleLossSwitch = Literal['l2','smooth_l1']
+LOSS_OBJECT_MAP : Mapping[SimpleLossSwitch, Any] = {
+    'l2' : torch.nn.MSELoss(reduction='none'),
+    'l1' : torch.nn.L1Loss(reduction='none'),
+    'smooth_l1' : torch.nn.SmoothL1Loss(reduction='none', beta=0.01)
+}
 
 
-def _element_wise_rotation_loss(pred, target):
-    assert (len(target.shape)==2 and target.shape[-1]==4), f"target tensor has invalid shape {target.shape}"
-    # TODO Is this better? torchquaternion.geodesicdistance(pred, target)/3.14
-    return torchquaternion.distance(pred, target)
+def smooth_geodesic_distance(pred, target):
+    smooth_zone = 1.*torch.pi/180. # One degree
+    normed_delta = torchquaternion.geodesicdistance(pred, target)
+    return F.smooth_l1_loss(normed_delta, torch.zeros_like(normed_delta), reduction='none', beta=smooth_zone)/torch.pi
 
 
-class QuatPoseLoss2(object):
-    def __init__(self, prefix=''):
+SimpleRotLossSwitch = Literal['approx_distance','smooth_geodesic']
+LOSS_FUNC_MAP_FOR_ROTATION = {
+    'approx_distance' : torchquaternion.distance,
+    'smooth_geodesic' : smooth_geodesic_distance
+}
+
+
+class QuatPoseLoss(object):
+    def __init__(self, loss : SimpleRotLossSwitch, prefix=''):
         self._prefix = prefix
+        self.loss_func = LOSS_FUNC_MAP_FOR_ROTATION[loss]
     def __call__(self, pred, sample):
         target = sample['pose']
         quat = pred[self._prefix+'pose']
-        loss = _element_wise_rotation_loss(quat, target)
-        return torch.mean(loss)
-
-
-class PoseXYLoss(object):
-    def __init__(self, prefix=''):
-        self._prefix = prefix
-    def __call__(self, pred, sample):
-        target = sample['coord'][...,2]
-        coord = pred[self._prefix+'coord'][...,2]
-        return F.mse_loss(coord, target, reduction='mean')
+        return self.loss_func(quat, target)
 
 
 class PoseSizeLoss(object):
-    def __init__(self, prefix=''):
+    def __init__(self, loss : SimpleLossSwitch, prefix=''):
         self._prefix = prefix
+        self.loss_obj = LOSS_OBJECT_MAP[loss]
+
+    def __call__(self, pred, sample):
+        target = sample['coord'][...,2]
+        coord = pred[self._prefix+'coord'][...,2]
+        loss = self.loss_obj(coord, target)
+        return loss
+
+
+class PoseXYLoss(object):
+    def __init__(self, loss : SimpleLossSwitch, prefix=''):
+        self._prefix = prefix
+        self.loss_obj = LOSS_OBJECT_MAP[loss]
+
     def __call__(self, pred, sample):
         target = sample['coord'][...,:2]
         coord = pred[self._prefix+'coord'][...,:2]
-        return F.mse_loss(coord, target, reduction='mean')
+        loss = self.loss_obj(coord, target).mean(dim=-1)
+        return loss
 
 
 class ShapeParameterLoss(object):
     def eval_on_params(self, pred, target):
-        lossvals = F.mse_loss(pred, target, reduction='none')
-        return torch.mean(lossvals)
+        lossvals = F.mse_loss(pred, target, reduction='none').mean(dim=-1)
+        return lossvals
 
     def __call__(self, pred, sample):
         return self.eval_on_params(pred['shapeparam'], sample['shapeparam'])
-
-
-class ShapePlausibilityLoss(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self._gmm = unpickle_scipy_gmm(join(dirname(__file__),'../facemodel/shapeparams_gmm.pkl'))
-
-    def __call__(self, pred, sample):
-        mean_nll = -self._gmm.score_samples(pred['shapeparam']).mean()
-        return mean_nll
 
 
 class QuaternionNormalizationSoftConstraint(object):
@@ -83,32 +83,15 @@ class QuaternionNormalizationSoftConstraint(object):
         assert len(unnormalized.shape)==2 and unnormalized.shape[-1]==4
         norm_loss = torch.norm(unnormalized, p=2, dim=1)
         norm_loss = torch.square(1.-norm_loss)
-        return torch.mean(norm_loss)
-
-
-class ShapeRegularization(object):
-    def __call__(self, pred, sample):
-        params = pred['shapeparam']
-        return torch.mean(torch.square(params))
+        return norm_loss
 
 
 class Points3dLoss(nn.Module):
-    class DistanceFunction(enum.Enum):
-        RWING = 1
-        MSE = 2
-        SMOOTH_L1 = 3
-        L1 = 4
-
-    def __init__(self, lossfunc=DistanceFunction.RWING, pointdimension : int = 3, chin_weight=1., eye_weights=0., prefix=''):
+    def __init__(self, loss : SimpleLossSwitch, pointdimension : int = 3, chin_weight=1., eye_weights=0., prefix=''):
         super().__init__()
         self._prefix=prefix
         assert pointdimension in (2,3)
-        self.lossfunc = {
-            self.DistanceFunction.RWING : lambda pred,target: rwing(torch.norm(pred-target, dim=-1), reduction='none'),
-            self.DistanceFunction.MSE : lambda pred, target: F.mse_loss(pred, target, reduction='none').sum(dim=-1),
-            self.DistanceFunction.SMOOTH_L1 : lambda pred, target: F.smooth_l1_loss(torch.norm(pred-target, dim=-1), pred.new_zeros(()), reduction='none', beta=0.01),
-            self.DistanceFunction.L1 : lambda pred, target: torch.norm(pred-target, dim=-1)
-        }[lossfunc]
+        self.loss_obj = LOSS_OBJECT_MAP[loss]
         self.pointdimension = pointdimension
 
         pointweights = np.ones((68,), dtype=np.float32)
@@ -122,29 +105,30 @@ class Points3dLoss(nn.Module):
         assert target.shape == pred.shape, f"Mismatch {target.shape} vs {pred.shape}"
         assert target.shape[2] == 3
         assert target.shape[1] == 68
-        unreduced = self.lossfunc(pred[...,:self.pointdimension], target[...,:self.pointdimension])
-        return torch.mean(unreduced*self.pointweights[None,:])
+        pointwise = self.loss_obj(pred[...,:self.pointdimension], target[...,:self.pointdimension]).sum(dim=-1)
+        return torch.mean(pointwise*self.pointweights[None,:], dim=-1)
 
     def forward(self, pred, sample):
         return self._eval_on_points(pred[self._prefix+'pt3d_68'], sample['pt3d_68'])
 
 
 class BoxLoss(object):
-    def __init__(self, dataname = 'roi'):
+    def __init__(self, loss : SimpleLossSwitch,  dataname = 'roi'):
         self.dataname = dataname
+        self.loss_obj = LOSS_OBJECT_MAP[loss]
     # Regression loss for bounding box prediction
     def __call__(self, pred, sample):
         # Only train this if the image shows a face
         target = sample[self.dataname]
         pred = pred[self.dataname]
-        return F.smooth_l1_loss(pred, target, reduction='mean', beta=0.1)
+        return self.loss_obj(pred, target).mean(dim=-1)
 
 
 class HasFaceLoss(object):
     def __call__(self, pred, sample):
         target = sample['hasface']
         logits = pred['hasface_logits']
-        return F.binary_cross_entropy_with_logits(logits, target, reduction='mean')
+        return F.binary_cross_entropy_with_logits(logits, target, reduction='none').mean(dim=-1)
 
 
 ##########################################

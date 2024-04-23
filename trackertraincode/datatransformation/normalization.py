@@ -20,7 +20,7 @@ from trackertraincode.datatransformation.core import (
 )
 
 
-def normalize_batch(sample : Batch, align_corners : bool):
+def normalize_batch(sample : Batch):
     """
         Normalize coordinates to [-1.,1.]
         Normalize the color range to [-0.5,0.5]. 
@@ -38,7 +38,7 @@ def normalize_batch(sample : Batch, align_corners : bool):
     def _compute_transform(sample : Batch):
         device = sample.device
         W, H = sample.meta.image_wh
-        tr = position_normalization(W, H, align_corners)
+        tr = position_normalization(W, H)
         tr = tr.to(device)
         return tr
 
@@ -59,11 +59,11 @@ def normalize_batch(sample : Batch, align_corners : bool):
     return sample
 
 
-def unnormalize_batch(sample : Batch, align_corners : bool):
+def unnormalize_batch(sample : Batch):
     def _compute_transform(sample):
         device = sample.device
         W, H = sample.meta.image_wh
-        tr = position_unnormalization(W, H, align_corners)
+        tr = position_unnormalization(W, H)
         tr = tr.to(device)
         return tr
 
@@ -89,17 +89,8 @@ def offset_points_by_half_pixel(sample : Batch):
     tr_for_points = Affine2d.trs(translations=torch.tensor([0.5,0.5]))
     for k, v in sample.items():
         c = get_category(sample,k)
-        if c in (FieldCategory.points, FieldCategory.quat, FieldCategory.xys):
+        if c in (FieldCategory.points, FieldCategory.xys):
             sample[k] = apply_affine2d(tr_for_points, k, v, c)
-    return sample
-
-
-def correct_roi_for_aligned_corners(sample : Batch):
-    sample = copy(sample)
-    for k, v in sample.items():
-        c = get_category(sample,k)
-        if c == FieldCategory.roi:
-            sample[k] = v - torch.tensor([0., 0., -1., -1.], device=v.device)
     return sample
 
 

@@ -52,6 +52,8 @@ python scripts/dswiderface_processing.py $@ $DATADIR/wider_faces $DATADIR/widerf
 # For training the pose estimator
 python scripts/dsaflw2k_processing.py    $@ $DATADIR/AFLW2000-3D.zip $DATADIR/aflw2k.h5
 python scripts/ds300wlp_processing.py    $@ $DATADIR/300W-LP.zip $DATADIR/300wlp.h5
+
+python scripts/create_aflw2k3d_closed_eyes.py $DATADIR/closedeyes.h5 --prob-closed-eyes 1.
 ```
 TODO finish
 
@@ -78,12 +80,15 @@ python scripts/train_poseestimator.py --lr 1.e-3 --epochs 1500 --ds "repro_300_w
     --backbone mobilenetv1
 ```
 
-
 Dependencies
 ============
-```
-Python, PyTorch, Jupyter, OpenCV, SciPy, H5py, tqdm, ONNX
-```
+
+Python, Pytorch and a lot more packages. Here is a hopefully mostly complete list 
+`torchvision onnx strenum h5py numpy scipy opencv kornia pillow tqdm matplotlib`. To check and run
+the onnx models you need the onnx runtime package.
+
+This should support training and eval. To generate the datasets you also need `pytorch-minimize facenet-pytorch scikit-learn`.
+
 Miscellaneous
 =============
 
