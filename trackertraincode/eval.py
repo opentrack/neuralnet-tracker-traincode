@@ -101,7 +101,7 @@ def load_pose_network(filename, device) -> InferenceNetwork:
             def __call__(self, batch):
                 outputs = self._inference(self.session, batch)
                 outputs = dict(zip(self.output_names, outputs))
-                if self.session.get_modelmeta().version not in (2,3):
+                if self.session.get_modelmeta().version not in (2,3,4):
                     # Old model needs coordinate conversion
                     quats = outputs['pose']
                     x, y, z = quats[...,0].copy(), quats[...,1].copy(), quats[...,2].copy()

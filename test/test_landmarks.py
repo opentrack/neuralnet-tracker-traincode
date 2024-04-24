@@ -11,33 +11,16 @@ from torchvision.transforms import Compose
 from torch import nn
 import torch
 
-from trackertraincode.neuralnets.modelcomponents import DeformableHeadKeypoints, rigid_transformation_25d
+from trackertraincode.neuralnets.modelcomponents import DeformableHeadKeypoints, rigid_transformation_25d, PosedDeformableHead
 from trackertraincode.datasets.batch import Batch
 import trackertraincode.datatransformation as dtr
 from trackertraincode.datasets.dshdf5pose import Hdf5PoseDataset
 import trackertraincode.vis as vis
 
-class PosedDeformableHead(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.deformablekeypoints = DeformableHeadKeypoints(40, 10)
-
-    def forward(self, batch):
-        quats = batch['pose']
-        coord = batch['coord']
-        params = batch['shapeparam']
-        local_keypts = self.deformablekeypoints.forward(params)
-        pt3d_68 = rigid_transformation_25d(
-            quats,
-            coord[...,:2],
-            coord[...,2:],
-            local_keypts)
-        assert pt3d_68.shape[-1] == 3 and pt3d_68.shape[-2] == 68
-        return pt3d_68
 
 
 def test_landmarks():
-    headmodel = PosedDeformableHead()
+    headmodel = PosedDeformableHead(DeformableHeadKeypoints())
 
     ds = Hdf5PoseDataset(
         join(dirname(__file__),'..','aflw2kmini.h5'),
@@ -47,7 +30,7 @@ def test_landmarks():
         ]))
     batch = Batch.collate([smpl for smpl in ds])
     with torch.no_grad():
-        pred = headmodel(batch)
+        pred = headmodel(batch['coord'],batch['pose'],batch['shapeparam'])
     target = batch['pt3d_68']
     diff = torch.mean(torch.norm(pred-target, dim=-1),axis=-1)
 

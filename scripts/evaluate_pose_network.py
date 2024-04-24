@@ -241,6 +241,6 @@ if __name__ == '__main__':
     parser.add_argument('--device', help='select device: cpu or cuda', default='cuda', type=str)
     parser.add_argument('--comprehensive-roi', action='store_true', default=False)
     parser.add_argument('--json', type=str, default=None)
-    parser.add_argument('--ds', type=str, default='aflw2k3d+aflw2k3d_grimaces')
+    parser.add_argument('--ds', type=str, default='aflw2k3d')
     args = parser.parse_args()
     run(args)

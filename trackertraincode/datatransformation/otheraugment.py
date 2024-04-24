@@ -24,7 +24,8 @@ from trackertraincode.datatransformation.affinetrafo import (
     affine_transform_image_torch,
     position_normalization,
     position_unnormalization)
-
+from trackertraincode.facemodel.bfm import ScaledBfmModule, BFMModel
+from trackertraincode.neuralnets.modelcomponents import PosedDeformableHead
 
 class RoiFocusRandomizationParameters(NamedTuple):
     scales : torch.Tensor # Shape B
@@ -181,25 +182,25 @@ class GeneralFocusRoi(object):
 class PutRoiFromLandmarks(object):
     def __init__(self, extend_to_forehead = False):
         self.extend_to_forehead = extend_to_forehead
+        self.headmodel = PosedDeformableHead(ScaledBfmModule(BFMModel()))
 
-    def _create_roi(self, landmarks3d):
-        is_tensor = isinstance(landmarks3d, torch.Tensor)
-        if is_tensor:
-            landmarks3d = landmarks3d.numpy()
+    def _create_roi(self, landmarks3d, sample):
         if self.extend_to_forehead:
-            roi = preprocessing.head_bbox_from_keypoints(landmarks3d)
+            vertices = self.headmodel(
+                sample['coord'],
+                sample['pose'],
+                sample['shapeparam'])
+            min_ = torch.amin(vertices[...,:2], dim=-2)
+            max_ = torch.amax(vertices[...,:2], dim=-2)
         else:
-            min_ = np.amin(landmarks3d[...,:2], axis=-2)
-            max_ = np.amax(landmarks3d[...,:2], axis=-2)
-            roi = np.concatenate([min_, max_], axis=0).astype(np.float32)
-        if is_tensor:
-            roi = torch.from_numpy(roi)
+            min_ = torch.amin(landmarks3d[...,:2], dim=-2)
+            max_ = torch.amax(landmarks3d[...,:2], dim=-2)
+        roi = torch.cat([min_, max_], dim=0).to(torch.float32)
         return roi
 
     def __call__(self, sample : Batch):
         if 'pt3d_68' in sample:
-            roi = self._create_roi(sample['pt3d_68'])
-            sample['roi'] = roi
+            sample['roi'] = self._create_roi(sample['pt3d_68'], sample)
         return sample
 
 

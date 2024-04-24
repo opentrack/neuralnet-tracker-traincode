@@ -53,6 +53,7 @@ def create_pose_dataset(
         shape_wo_batch_dim : Optional[Tuple[int,...]] = None,
         data = None,
         dtype = None,
+        exists_ok = False,
         **kwargs):
     def equal_or_updated(x, update):
         assert (x is None) or (update is None) or (x == update)
@@ -96,6 +97,8 @@ def create_pose_dataset(
             equal_or_updated(x,u) for x,u in zip(shape,data.shape))
         assert data.shape == shape, f"Expected shape {shape} but got from data the shape {data.shape}"
     assert all(x is not None for x in shape)
+    if exists_ok and name in g:
+        del g[name]
     if kind == FieldCategory.image:
         ds = ImageVariableLengthBufferDs.create(g, name, count, **kwargs)
     elif kind == FieldCategory.semseg:

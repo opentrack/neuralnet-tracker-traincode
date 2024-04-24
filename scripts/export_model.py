@@ -25,6 +25,7 @@ def clear_denormals(state_dict, threshold=1.e-20):
     # I tuned the threshold so I don't see a performance
     # decrease compared to pretrained weights from torchvision.
     # The real denormals start below 2.*10^-38
+    # Denormals make computations on CPU very slow .. at least back then ...
     state_dict = copy.deepcopy(state_dict)
     print ("Denormals or zeros:")
     for k, v in state_dict.items():
@@ -52,7 +53,7 @@ class ModelForOpenTrack(nn.Module):
         ]
         if original.enable_uncertainty:
             self._output_name_map += [
-                ('coord_scales'     , 'pos_size_scales'),
+                ('coord_scales'     , 'pos_size_scales_tril'),
                 ('pose_scales_tril' , 'rotaxis_scales_tril'),
                 ('roi_scales'       , 'box_scales'),
             ]
@@ -99,7 +100,8 @@ def load_posemodel(args):
         enable_point_head=True,
         enable_face_detector=False,
         config='mobilenetv1',
-        enable_uncertainty=True
+        enable_uncertainty=True,
+        backbone_args = {'use_blurpool' : False}
     )
     net.load_state_dict(sd, strict=True)
     return net

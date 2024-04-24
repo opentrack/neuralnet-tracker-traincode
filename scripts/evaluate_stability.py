@@ -1,6 +1,12 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+# Workaround for "RuntimeError: received 0 items of ancdata" in data loader.
+# See https://github.com/pytorch/pytorch/issues/973
+import resource
+rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
+resource.setrlimit(resource.RLIMIT_NOFILE, (4096, rlimit[1]))
+
 import numpy as np
 import argparse
 import tqdm
@@ -197,8 +203,8 @@ def report_blink_stability(poses_by_parameters : List[Poses]):
     rights = xs + 5
 
     def mse(vals):
-        fuck = np.square(vals[lefts]-vals[rights])
-        return np.sqrt(np.mean(fuck, axis=0))
+        diffsqr = np.square(vals[lefts]-vals[rights])
+        return np.sqrt(np.mean(diffsqr, axis=0))
 
     def param_average_mse(name):
         return np.average([mse(getattr(poses,name)) for poses in poses_by_parameters], axis=0)

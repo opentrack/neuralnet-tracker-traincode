@@ -6,12 +6,9 @@ from matplotlib import pyplot
 from matplotlib.widgets import Button
 from typing import Tuple, Union, Optional
 
-import trimesh
-import pyrender
-
 from trackertraincode.datasets.batch import Batch
 from trackertraincode.datatransformation import _ensure_image_nhwc
-from trackertraincode.facemodel.bfm import BFMModel
+
 
 PRED_COLOR=(0,0,255)
 GT_COLOR=(0,200,0)
@@ -57,35 +54,32 @@ def draw_axis(img, rot, tdx=None, tdy=None, size = 100, brgt = 255, lw=3, color 
     return img
 
 
-def draw_points3d(img, pt3d, labels=True, is_pred=False):
+def draw_points3d(img, pt3d, size=3, color=(255,255,255), labels=False):
     assert pt3d.shape[-1] in (2,3)
-    if is_pred:
-        r,g,b = PRED_COLOR
-    else:
-        r,g,b = GT_COLOR
+    r,g,b = color
     for i, p in enumerate(pt3d[:,:2]):
         p = tuple(p.astype(int))
         if labels:
             cv2.putText(img, str(i), (p[0]+2,p[1]), cv2.FONT_HERSHEY_SIMPLEX,
                     0.3, (255,255,255), 1, cv2.LINE_AA)
-        cv2.circle(img, p, 4, (255,255,255), -1)
-        cv2.circle(img, p, 3, (r,g,b), -1)
+        cv2.circle(img, p, size+1, (255,255,255), -1)
+        cv2.circle(img, p, size, (r,g,b), -1)
 
 
 def draw_roi(img, roi, color, linewidth):
     cv2.rectangle(img, (round(roi[0]),round(roi[1])), (round(roi[2]),round(roi[3])), color, linewidth)
 
 
-def draw_pose(img, sample, is_prediction):
+def draw_pose(img, sample, color=None, linewidth=3):
     rot = sample['pose']
     x, y, s = sample['coord']
-    color = PRED_COLOR if is_prediction else GT_COLOR
-    linewidth = 3
     draw_axis(img, rot, tdx = x, tdy = y, brgt=255, lw=linewidth, color=color)
     if s <= 0.:
         print (f"Error, head size {s} not positive!")
         print (sample)
     else:
+        if color is None:
+            color = (200,200,0)
         cv2.circle(img, (int(x),int(y)), int(s), color, linewidth)
 
 
@@ -136,28 +130,27 @@ def draw_semseg_logits(semseg : np.ndarray):
 
 
 def _draw_sample(img : np.ndarray, sample : Union[Batch,dict], is_prediction : bool, labels : bool = True):
-    linewidth = 3 #1 if is_prediction else 2
-    #brightness = 255 if is_prediction else 128
+    linewidth = 2
+    color = PRED_COLOR if is_prediction else GT_COLOR
     if 'seg_image' in sample:
         semseg = draw_semseg_class_indices(sample['seg_image'])
         img //= 2
         img += semseg // 2
     if 'pose' in sample and 'coord' in sample:
-        draw_pose(img, sample, is_prediction)
+        draw_pose(img, sample, color, linewidth)
     if 'roi' in sample:
         #color = ((0,brightness,0) if sample['hasface']>0.5 else (brightness,0,0)) \
         #        if 'hasface' in sample else (brightness,0,brightness)
-        color = PRED_COLOR if is_prediction else GT_COLOR
         roi = sample['roi']
         draw_roi(img, roi, color, linewidth)
     if 'hasface' in sample:
         maybe_draw_no_face_indication(img, sample, 255, linewidth)
     if 'pt3d_68' in sample:
         draw_points3d(img, sample['pt3d_68'], 
-            labels, is_pred=is_prediction)
+            linewidth-1, color, labels)
     if 'pt2d_68' in sample:
         draw_points3d(img, sample['pt2d_68'], 
-            labels, is_pred=is_prediction)
+            linewidth-1, color, labels)
 
 
 def draw_prediction(sample_pred : Tuple[Batch,dict]):
@@ -238,84 +231,3 @@ def matplotlib_plot_iterable(iterable, drawfunc, rows=3, cols=3, figsize=(10,10)
     show_next_samples()
 
     return fig, button
-
-
-def _adjust_camera(camera_node : pyrender.Node, image_shape, background_plane_z_coord, scale):
-    cam : pyrender.PerspectiveCamera = camera_node.camera
-    h, w, _ = image_shape
-    zdistance = 10000
-    fov = 2.*np.arctan(0.5*(h)/(zdistance + background_plane_z_coord))
-    cam.yfov=fov
-    cam.znear = zdistance-scale*2
-    cam.zfar = zdistance+scale*2
-    campose = np.eye(4)
-    campose[:3,3] = [ w//2, h//2, -zdistance  ]
-    campose[:3,:3] = [
-        [ 1, 0, 0 ],
-        [ 0, 0, -1 ],
-        [ 0, -1, 0 ]
-    ]
-    camera_node.matrix = campose
-
-
-def _estimate_vertex_normals(vertices, tris):
-    face_normals = trimesh.Trimesh(vertices, tris).face_normals
-    new_normals = trimesh.geometry.mean_vertex_normals(len(vertices), tris, face_normals)
-    assert new_normals.shape == vertices.shape, f"{new_normals.shape} vs {vertices.shape}"
-    return new_normals
-
-
-def _rotvec_between(a, b):
-    a = a/np.linalg.norm(a)
-    b = b/np.linalg.norm(b)
-    axis_x_sin = np.cross(a,b)
-    cos_ = np.dot(a,b)
-    if cos_ < -1.+1.e-6:
-        return np.array([0.,np.pi,0.])
-    if cos_ < 1.-1.e-6:
-        return axis_x_sin/np.linalg.norm(axis_x_sin)*np.arccos(cos_)
-    return np.zeros((3,))
-
-
-def _direction_vector_to_pose_matrix(v):
-    v = v / np.linalg.norm(v,keepdims=True)
-    pose = np.eye(4)
-    pose[:3,:3] = Rotation.from_rotvec(_rotvec_between(np.asarray([0., 0., -1.]),v)).as_matrix()
-    return pose
-
-# TODO: refactor -> vis 3d module
-class FaceRender(object):
-    def __init__(self):
-        self._bfm = BFMModel(40, 10)
-        self._mat = pyrender.MetallicRoughnessMaterial(doubleSided=True, roughnessFactor=0.1, metallicFactor=0.0)
-        vertices = self._bfm.scaled_vertices
-        normals = _estimate_vertex_normals(self._bfm.scaled_vertices, self._bfm.tri)
-        self._node = pyrender.Node(
-            mesh=pyrender.Mesh(primitives = [pyrender.Primitive(positions = vertices, indices=self._bfm.tri, material=self._mat, normals=normals)]), 
-            matrix=np.eye(4))
-        self._scene = pyrender.Scene(bg_color=[0.0, 0.0, 0.0])
-        self._scene.add_node(self._node)
-        self._light = pyrender.light.DirectionalLight(intensity=15.)
-        self._scene.add_node(pyrender.Node(light = self._light, matrix=_direction_vector_to_pose_matrix([1.,0.,-10.])))
-        self._camera_node = pyrender.Node(
-            camera=pyrender.PerspectiveCamera(yfov=0.1, znear = 1., zfar = 10.),
-            matrix=np.eye(4))
-        _adjust_camera(self._camera_node, (640,640,None), 0., scale=240)
-        self._scene.add_node(self._camera_node)
-        self._renderer = pyrender.OffscreenRenderer(viewport_width=240, viewport_height=240)
-
-    def set(self, xy, scale, rot, shapeparams, image_shape):
-        '''Parameters must be given w.r.t. image space'''
-        h, w = image_shape
-        _adjust_camera(self._camera_node, (h,w,None), 0., scale=w)
-        vertices = self._bfm.scaled_vertices + np.sum(self._bfm.scaled_bases * shapeparams[:,None,None], axis=0)
-        normals = _estimate_vertex_normals(vertices, self._bfm.tri)
-        self._node.mesh = pyrender.Mesh(primitives = [pyrender.Primitive(positions = vertices, indices=self._bfm.tri, material=self._mat, normals=normals)])
-        matrix = np.eye(4)
-        matrix[:3,:3] = scale * rot.as_matrix()
-        matrix[:2,3] = xy
-        self._node.matrix = matrix
-        self._renderer.viewport_height = h
-        self._renderer.viewport_width = w
-        rendering, depth = self._renderer.render(self._scene)
-        return rendering

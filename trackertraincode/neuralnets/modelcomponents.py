@@ -86,6 +86,23 @@ class DeformableHeadKeypoints(nn.Module):
         return local_keypts
 
 
+class PosedDeformableHead(nn.Module):
+    # TODO: Type annotation & interface specification
+    def __init__(self, deformable_head):
+        super().__init__()
+        self.deformable_head = deformable_head
+
+    def forward(self, coord, quats, params):
+        local_keypts = self.deformable_head(params)
+        points = rigid_transformation_25d(
+            quats,
+            coord[...,:2],
+            coord[...,2:],
+            local_keypts)
+        assert points.shape[-1] == 3 and points.shape[:-2] == quats.shape[:-1]
+        return points
+
+
 # TODO: replace with kornia functions
 class CenterOfMass(nn.Module):
     def __init__(self, half_size=1.):

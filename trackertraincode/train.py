@@ -464,8 +464,8 @@ def default_update_fun(net, batch : List[Batch], optimizer : torch.optim.Optimiz
 
     inputs = torch.concat([b['image'] for b in batch], dim=0)
     
-    assert torch.amin(inputs)>=-2., f"fuck {torch.amin(inputs)}"
-    assert torch.amax(inputs)<= 2., f"fuck {torch.amin(inputs)}"
+    assert torch.amin(inputs)>=-2., f"Input out of normal image bounds: {torch.amin(inputs)}"
+    assert torch.amax(inputs)<= 2., f"Input out of normal image bounds: {torch.amax(inputs)}"
 
     preds = net(inputs)
 

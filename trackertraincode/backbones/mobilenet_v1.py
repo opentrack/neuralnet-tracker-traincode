@@ -10,7 +10,7 @@ Copyright (c) Yang Lu, 2017
 
 Modified By cleardusk
 
-Even more modified by M Welter
+Even more modified by Michael Welter
 """
 
 from typing import Optional

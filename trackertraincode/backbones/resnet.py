@@ -8,24 +8,24 @@ from functools import partial
 from trackertraincode.neuralnets.modelcomponents import BlurPool2D
 
 
-class CustomBottleneck(torchvision.models.resnet.Bottleneck):
-    def __init__(
-        self,
-        inplanes: int,
-        planes: int,
-        stride: int = 1,
-        downsample: Optional[nn.Module] = None,
-        groups: int = 1,
-        base_width: int = 64,
-        dilation: int = 1,
-        norm_layer: Optional[Callable[..., nn.Module]] = None,
-    ):
-        super().__init__(inplanes, planes, stride, downsample, groups, base_width, dilation, norm_layer)
-        width = int(planes * (base_width / 64.0)) * groups
-        self.conv2 = nn.Sequential(
-            BlurPool2D(kernel_size=3, channels=width, stride=stride),
-            torchvision.models.resnet.conv3x3(width, width, 1, groups, dilation)
-        )
+# class CustomBottleneck(torchvision.models.resnet.Bottleneck):
+#     def __init__(
+#         self,
+#         inplanes: int,
+#         planes: int,
+#         stride: int = 1,
+#         downsample: Optional[nn.Module] = None,
+#         groups: int = 1,
+#         base_width: int = 64,
+#         dilation: int = 1,
+#         norm_layer: Optional[Callable[..., nn.Module]] = None,
+#     ):
+#         super().__init__(inplanes, planes, stride, downsample, groups, base_width, dilation, norm_layer)
+#         width = int(planes * (base_width / 64.0)) * groups
+#         self.conv2 = nn.Sequential(
+#             BlurPool2D(kernel_size=3, channels=width, stride=stride),
+#             torchvision.models.resnet.conv3x3(width, width, 1, groups, dilation)
+#         )
 
 
 class CustomBlock(torchvision.models.resnet.BasicBlock):
@@ -48,15 +48,24 @@ class CustomBlock(torchvision.models.resnet.BasicBlock):
 
 
 class ResNetBackbone(nn.Module):
-    def __init__(self, resnet_ctor, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         super().__init__()
         
-        if isinstance(resnet_ctor, str):
-            resnet_ctor = getattr(torchvision.models.resnet, resnet_ctor)
+        use_blurpool = kwargs.pop('use_blurpool')
+        print ("ResNet blurpool = ", use_blurpool)
 
-        net : "torchvision.models.resnet.ResNet" = resnet_ctor(*args, **kwargs)
-        net.maxpool = BlurPool2D(kernel_size=3, channels=64, stride=2)
-        net.conv1 = nn.Conv2d(1,64,kernel_size=7, stride=2, padding=3, bias=False)
+        kwargs['block']=CustomBlock if use_blurpool else torchvision.models.resnet.BasicBlock
+
+        resnet_factory = torchvision.models.resnet._resnet
+
+        net : "torchvision.models.resnet.ResNet" = resnet_factory(*args, **kwargs)
+
+        if use_blurpool:
+            net.maxpool = BlurPool2D(kernel_size=3, channels=64, stride=2)
+            net.conv1 = nn.Conv2d(1, 64,kernel_size=7, stride=2, padding=3, bias=False)
+        else:
+            net.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+
 
         layers = [*net.children()][:-1]
         layers.append(nn.Flatten())
@@ -85,12 +94,10 @@ class ResNetBackbone(nn.Module):
 
 
 def resnet18(use_blurpool : bool = True):
-    assert use_blurpool == True, "Not implemented"
     net = ResNetBackbone(
-        torchvision.models.resnet._resnet, 
-        block=CustomBlock,
         layers=[2,2,2,2],
         weights=None,
         progress=True,
-        zero_init_residual=True)
+        zero_init_residual=True,
+        use_blurpool=use_blurpool)
     return net

@@ -127,23 +127,21 @@ def fitall(args):
 
     with h5py.File(args.filename, 'r+') as f:
         g = f.require_group(args.hdfgroupname) if args.hdfgroupname else f
-        ds_quats = create_pose_dataset(g, C.quat, count=num_samples, data=quats)
-        ds_coords = create_pose_dataset(g, C.xys, count=num_samples, data=coords)
-        ds_pt3d_68 = create_pose_dataset(g, C.points, name='pt3d_68', count=num_samples, shape_wo_batch_dim=(68,3), data=pt3d_68)
-        ds_shapeparams = create_pose_dataset(g,C.general, name='shapeparams', count=num_samples, shape_wo_batch_dim=(50,), data = shapeparams)
+        ds_quats = create_pose_dataset(g, C.quat, count=num_samples, data=quats, exists_ok=args.overwrite)
+        ds_coords = create_pose_dataset(g, C.xys, count=num_samples, data=coords, exists_ok=args.overwrite)
+        ds_pt3d_68 = create_pose_dataset(g, C.points, name='pt3d_68', count=num_samples, shape_wo_batch_dim=(68,3), data=pt3d_68, exists_ok=args.overwrite)
+        ds_shapeparams = create_pose_dataset(g,C.general, name='shapeparams', count=num_samples, shape_wo_batch_dim=(50,), data = shapeparams, exists_ok=args.overwrite)
 
 
 if __name__== '__main__':
     test_quats_average()
-
-    defaultcheckpoint = join(dirname(__file__),'..','model_files','best_rot_NetworkWithPointHead.pt')
     parser = argparse.ArgumentParser()
     parser.add_argument('filename', type=str, help='the dataset to label')
-    parser.add_argument('-c','--checkpoints', help='model checkpoint', nargs='*', type=str, default=defaultcheckpoint)
+    parser.add_argument('-c','--checkpoints', help='model checkpoint', nargs='*', type=str)
     parser.add_argument('-b','--batchsize', help="The batch size", type=int, default=512)
     parser.add_argument('--hdf-group-name', help="Group to store the annotations in", type=str, default='', dest='hdfgroupname')
     parser.add_argument('--dryrun', default=False, action='store_true')
-    #parser.add_argument('-d','--device', type=str, default='cuda')
+    parser.add_argument('--overwrite', '-f', default=False, action='store_true')
     args = parser.parse_args()
     args.device = 'cuda'
     fitall(args)

@@ -98,7 +98,7 @@ def make_lapa_dataset(transform=None):
 
 
 def make_lapa_megaface_lp_dataset(transform=None):
-    filename = join(os.environ['DATADIR'],'lapa-megaface-augmented-v1.5.h5')
+    filename = join(os.environ['DATADIR'],'lapa-megaface-augmented-v2.h5')
     return Hdf5PoseDataset(filename, transform=transform, dataclass=Tag.POSE_WITH_LANDMARKS)
 
 
@@ -115,7 +115,7 @@ def make_wflw_relabeled_dataset(transform=None, test_transform=None):
 
 
 def make_wflw_lp_dataset(transform=None):
-    return Hdf5PoseDataset(join(os.environ['DATADIR'],'wflw_augmented_v3.3.h5'), transform=transform, dataclass=Tag.POSE_WITH_LANDMARKS)
+    return Hdf5PoseDataset(join(os.environ['DATADIR'],'wflw_augmented_v4.h5'), transform=transform, dataclass=Tag.POSE_WITH_LANDMARKS)
 
 
 def make_widerface_datasets(transform=None):
@@ -239,7 +239,6 @@ def _make_roi_augmentations(inputsize : int, stage : str, mode : str, rotation_a
             dtr.PutRoiFromLandmarks(extend_to_forehead=False)
         ]
     else:
-        # For first round of runs for publication.
         return [
             dtr.PutRoiFromLandmarks(extend_to_forehead=True),
             cropping_aug
@@ -290,7 +289,7 @@ def make_pose_estimation_loaders(
         (Id._300VW, make_300vw_dataset, 5000.),
         (Id.LAPA, make_lapa_dataset, 20000.),
         (Id.WFLW_LP, make_wflw_lp_dataset, 40000.),
-        # There are over 100k frames in the latter but the labels are a bit shitty so I don't weight it as high.
+        # There are over 70k frames in the latter but the labels are a bit shitty so I don't weight it as high.
         (Id.LAPA_MEGAFACE_LP, make_lapa_megaface_lp_dataset, 10000.) ]:
             if id not in datasets:
                 continue
