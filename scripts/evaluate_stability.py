@@ -187,7 +187,7 @@ def visualize(preds : List[Union[Poses,PosesWithStd]], checkpoints : List[str]):
                 axes[k+5].plot(pred.coord_scales[...,2,1])
                 for i, label in zip(range(k,k+6),['y-sz', 'x-sz', 'sz', 'x', 'y', 'x-y']):
                     axes[i].set(ylabel=label)
-            else:
+            elif pred.coord_scales is not None:
                 axes[k].plot(pred.coord_scales[...,2])
                 axes[k].set(ylabel='sz')
         make_nice(axes)
@@ -470,6 +470,9 @@ def main_analyze_noise_resist(paths : List[str]):
     prefix = os.path.commonprefix([p for p,_,_ in metrics_by_network_and_noise_and_quantity.keys()])
     metrics_by_network_and_noise_and_quantity = { (os.path.relpath(k,prefix),n,q):v for (k,n,q),v in metrics_by_network_and_noise_and_quantity.items() }
 
+    with open('/tmp/noise_resist_result_v2.pkl','wb') as f:
+        pickle.dump(metrics_by_network_and_noise_and_quantity, f)
+
     # Mean and average over ensemble
     metrics_by_network_and_quantity = defaultdict(list)
     for (cp, noise, quantity), results in metrics_by_network_and_noise_and_quantity.items():
@@ -484,9 +487,6 @@ def main_analyze_noise_resist(paths : List[str]):
         noise, avg, maybe_std = map(np.asarray,zip(*rows))
         rows = zip(noise, avg[:,0], maybe_std[:,0], avg[:,1], maybe_std[:,1])
         print (tabulate.tabulate(rows, [ 'noise', 'center', '+/-', 'spread', '+/-', 'err', '+/-'  ], tablefmt='github', floatfmt=".2f"))
-
-    with open('/tmp/noise_resist_result.pkl','wb') as f:
-        pickle.dump(metrics_by_network_and_quantity, f)
 
     if 1: # vis
         checkpoints = frozenset([cp for cp,_ in metrics_by_network_and_quantity.keys()])

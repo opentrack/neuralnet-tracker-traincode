@@ -127,15 +127,11 @@ class TableBuilder:
         self._header = [ 'Data', 'Pitch°', 'Yaw°', 'Roll°', 'Mean°', 'Geodesic°', 'XY%', 'S%', 'NME3d%', 'NME2d%_30', 'NME2d%_60', 'NME2d%_90', 'NME2d%_avg' ]
         self._entries_by_model = defaultdict(list)
     
-    def add_row(self, model : str, data : str, euler_angles : List[float], geodesic : float, rmse_pos : float, rmse_size : float, uw_nme_3d, nme_2d, data_aux_string = None):
-        # maxlen = 30
-        # if len(model) > maxlen+3:
-        #     model = '...'+model[-maxlen:]
-
-        uw_nme_3d = uw_nme_3d*100 if uw_nme_3d is not None else 'n/a'
-        nme_2d_30, nme_2d_60, nme_2d_90, nme_2d_avg = [(x*100 if nme_2d is not None else 'n/a') for x in nme_2d]
+    def add_row(self, model : str, data : str, euler_angles : List[float], geodesic : float, rmse_pos : float, rmse_size : float, unweighted_nme_3d, nme_2d, data_aux_string = None):
+        unweighted_nme_3d = unweighted_nme_3d*100 if unweighted_nme_3d is not None else 'n/a'
+        nme_2d_30, nme_2d_60, nme_2d_90, nme_2d_avg = ['/na' for _ in range(4)] if nme_2d is None else [x*100 for x in nme_2d]
         data = self.data_name_table.get(data, data) + (data_aux_string if data_aux_string is not None else '')
-        self._entries_by_model[model] += [[data] + euler_angles + [ np.average(euler_angles).tolist(), geodesic, rmse_pos, rmse_size, uw_nme_3d, nme_2d_30, nme_2d_60, nme_2d_90, nme_2d_avg]]
+        self._entries_by_model[model] += [[data] + euler_angles + [ np.average(euler_angles).tolist(), geodesic, rmse_pos, rmse_size, unweighted_nme_3d, nme_2d_30, nme_2d_60, nme_2d_90, nme_2d_avg]]
     
     def build(self) -> str:
         prefix = commonprefix(list(self._entries_by_model.keys()))
@@ -185,7 +181,7 @@ def report(net_filename, data_name, roi_config : RoiConfig, args : argparse.Name
         rmse_pos=(rmse_pos*100.).tolist(),
         rmse_size=(rmse_size*100.).tolist(),
         data_aux_string=' / ' + str(roi_config),
-        uw_nme_3d=np.average(uw_nme_3d) if uw_nme_3d is not None else None,
+        unweighted_nme_3d=np.average(uw_nme_3d) if uw_nme_3d is not None else None,
         nme_2d=nme_2d
     )
 
