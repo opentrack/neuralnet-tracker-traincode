@@ -5,7 +5,7 @@
 # See https://github.com/pytorch/pytorch/issues/973
 import resource
 rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
-resource.setrlimit(resource.RLIMIT_NOFILE, (4096, rlimit[1]))
+resource.setrlimit(resource.RLIMIT_NOFILE, (4096*2, rlimit[1]))
 
 import numpy as np
 import argparse
@@ -25,7 +25,7 @@ from trackertraincode.neuralnets.torchquaternion import quat_average, geodesicdi
 import glob
 import matplotlib
 import matplotlib.lines
-import pickle
+import h5py
 
 from trackertraincode.datasets.batch import Batch
 import trackertraincode.datatransformation as dtr
@@ -377,8 +377,18 @@ def noisify(img : torch.Tensor, noiselevel : Union[torch.Tensor,float]):
     return (img+noiselevel*torch.randn_like(img, dtype=torch.float32)).clip(0., 255.).to(torch.uint8)
 
 
-def main_analyze_noise_resist(paths : List[str]):
+def main_analyze_noise_resist(path : str, output_filename : str):
+    '''Create an hdf5 file with measurements. 
+
+    Its content is a dataset of errors for quats and rois.
+    Dataset shapes are (#noise levels, #networks, #measurements)
+    Measurements are
+        * Error per sample
+        * Spread of the predictions
+        * Error of mean of the prediction
+    '''
     rng = np.random.RandomState(seed = 12345678)
+
     noise_samples = 16
     data_samples = None
     noiselevels = [ 0., 2., 8., 16., 32., 48., 64. ]
@@ -447,73 +457,30 @@ def main_analyze_noise_resist(paths : List[str]):
 
     rad2deg = 180./np.pi
 
-    assert all(bool(_find_models(path)) for path in paths)
+    # Indexed by [noiselevel, quantity]
+    quantities = ['pose','roi']
+    checkpoints = _find_models(path)
+    by_quantities = { q:np.full((len(noiselevels), len(checkpoints), 3), fill_value=np.nan) for q in quantities }
+    for i_check, checkpoint in enumerate(checkpoints):
+        net = load_pose_network(checkpoint, 'cuda')
+        for i_noise, noiselevel in enumerate(noiselevels):
+            preds, gt  = predict_noisy_dataset(net, loader, noiselevel, ('pose','roi'))
+            err_rot, spread, err_rot2 = compute_metrics_for_quats(gt['pose'], preds['pose'])
+            err_roi, spread_roi, err_roi2 = compute_metrics_for_roi(gt['roi'], preds['roi'])
+            by_quantities['pose'][i_noise,i_check,:] = [
+                err_rot*rad2deg, 
+                spread*rad2deg,
+                err_rot2*rad2deg ]
+            by_quantities['roi'][i_noise,i_check,:] = [
+                err_roi, 
+                spread_roi,
+                err_roi2 ]
 
-    metrics_by_network_and_noise_and_quantity = defaultdict(list)
-    for path in paths:
-        checkpoint = _find_models(path)
-        for checkpoint in checkpoint:
-            net = load_pose_network(checkpoint, 'cuda')
-            for noiselevel in noiselevels:
-                preds, gt  = predict_noisy_dataset(net, loader, noiselevel, ('pose','roi'))
-                err_rot, spread, err_rot2 = compute_metrics_for_quats(gt['pose'], preds['pose'])
-                err_roi, spread_roi, err_roi2 = compute_metrics_for_roi(gt['roi'], preds['roi'])
-                metrics_by_network_and_noise_and_quantity[path, noiselevel,'pose'].append([
-                    err_rot*rad2deg, 
-                    spread*rad2deg,
-                    err_rot2*rad2deg ])
-                metrics_by_network_and_noise_and_quantity[path, noiselevel,'roi'].append([
-                    err_roi, 
-                    spread_roi,
-                    err_roi2 ])
-
-    prefix = os.path.commonprefix([p for p,_,_ in metrics_by_network_and_noise_and_quantity.keys()])
-    metrics_by_network_and_noise_and_quantity = { (os.path.relpath(k,prefix),n,q):v for (k,n,q),v in metrics_by_network_and_noise_and_quantity.items() }
-
-    with open('/tmp/noise_resist_result_v2.pkl','wb') as f:
-        pickle.dump(metrics_by_network_and_noise_and_quantity, f)
-
-    # Mean and average over ensemble
-    metrics_by_network_and_quantity = defaultdict(list)
-    for (cp, noise, quantity), results in metrics_by_network_and_noise_and_quantity.items():
-        metrics_by_network_and_quantity[cp,quantity].append((
-            noise,
-            np.average(results,axis=0),
-            np.std(results,axis=0) if len(results) > 1 else np.full((2,),np.nan)
-        ))
-
-    for (checkpoint, quanitity), rows in metrics_by_network_and_quantity.items():
-        print (f"Checkpoint: {checkpoint} / Quantity: {quanitity}")
-        noise, avg, maybe_std = map(np.asarray,zip(*rows))
-        rows = zip(noise, avg[:,0], maybe_std[:,0], avg[:,1], maybe_std[:,1])
-        print (tabulate.tabulate(rows, [ 'noise', 'center', '+/-', 'spread', '+/-', 'err', '+/-'  ], tablefmt='github', floatfmt=".2f"))
-
-    if 1: # vis
-        checkpoints = frozenset([cp for cp,_ in metrics_by_network_and_quantity.keys()])
-        for quantity in ['pose','roi']:
-            fig, ax = pyplot.subplots(3,1)
-            for checkpoint in checkpoints:
-                metrics = metrics_by_network_and_quantity[checkpoint,quantity]
-                noise, avg, maybe_std = map(np.asarray,zip(*metrics))
-                ycenter, spread, yerr  = avg.T
-                if np.any(np.isnan(maybe_std)):
-                    ax[0].plot(noise, spread, label=checkpoint)
-                    ax[1].plot(noise, ycenter, label=checkpoint)
-                    ax[2].plot(noise, yerr, label=checkpoint)
-                else:
-                    ax[0].errorbar(noise, spread, yerr=maybe_std[:,0], label=checkpoint, capsize=10.)
-                    ax[1].errorbar(noise, ycenter, yerr=maybe_std[:,1], label=checkpoint, capsize=10.)
-                    ax[2].errorbar(noise, yerr, yerr=maybe_std[:,2], label=checkpoint, capsize=10.)
-                ax[0].legend()
-                if quantity == 'pose':
-                    ax[0].set(xlim=(0.,64), ylim=(0.,2.), ylabel='rot spread [deg]')
-                    ax[1].set(xlim=(0.,64), ylim=(4.,6.), ylabel='rot loc')
-                    ax[2].set(xlim=(0.,64), ylim=(4.,6.), xlabel='input noise std', ylabel='rot err')
-                elif quantity == 'roi':
-                    ax[0].set(xlim=(0.,64), ylim=(0.,0.02), ylabel='coordinate spread [%]')
-                    ax[1].set(xlim=(0.,64), ylim=(0.,0.2), ylabel='coordinate loc error [%]')
-                    ax[2].set(xlim=(0.,64), ylim=(0.,0.2), xlabel='input noise std', ylabel='roi coordinate error [%]')
-        pyplot.show()
+    with h5py.File(output_filename, 'w') as f:
+        for k, v in by_quantities.items():
+            ds = f.create_dataset(k, data = v)
+            ds.attrs['noiselevels'] = noiselevels
+            ds.attrs['quantity'] = k
 
 
 def main_analyze_uncertainty_error_correlation(paths : List[str], noised : bool = False):
@@ -586,6 +553,7 @@ if __name__ == '__main__':
     parser.add_argument('--open-loop', action='store_true', default=False)
     parser.add_argument('--noise-resist', action='store_true', default=False)
     parser.add_argument('--uncertainty-correlation', action='store_true', default=False)
+    parser.add_argument('-o', '--output', type=str, help='output filename if supported', default='')
     args = parser.parse_args()
     if not (args.closed_loop or args.pitch_yaw or args.noise_resist or args.uncertainty_correlation):
         args.open_loop = True
@@ -596,6 +564,8 @@ if __name__ == '__main__':
     if args.pitch_yaw:
         main_analyze_pitch_vs_yaw(args.filename)
     if args.noise_resist:
-        main_analyze_noise_resist(args.filename)
+        assert len(args.filename)==1, 'Only one group of network is supported for this analysis'
+        assert args.output, "Output filename must be set"
+        main_analyze_noise_resist(args.filename[0], args.output)
     if args.uncertainty_correlation:
         main_analyze_uncertainty_error_correlation(args.filename)
