@@ -1,13 +1,17 @@
-# OpNet: On the power of data augmentation for head pose estimation networks
-
-A.K.A. OpenTrack's NeuralNet Tracker Training and Evaluation Code
+# OpNet: On the power of data augmentation for head pose estimation
 
 Intro
 -----
 
-This branch contains the code for the publication. Beware, it also contains leftover things from past experiments.
+This branch contains the code for the publication (https://arxiv.org/abs/2407.05357) on creating a neural network for human head pose estimation.
+It is, with minor alterations a snapshot of ongoing development in the `master` branch.
 
 This readme contains instructions for evaluation and training.
+
+### Addendum to the paper
+
+I forgot to mention that the variance prediction heads have Batchnorm at the very end. With everything else fixed I got pretty bad results without BN.
+
 
 Install
 -------
