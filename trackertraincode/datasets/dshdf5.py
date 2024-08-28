@@ -81,6 +81,9 @@ class ImageVariableLengthBufferDs(ImageDs):
     def __len__(self):
         return len(self.ds)
     
+    def resize(self, size, axis):
+        return self.ds.resize(size, axis)
+
     @cached_property
     def attrs(self):
         return self.ds.attrs
@@ -124,6 +127,9 @@ class ImagePathDs(ImageDs):
 
     def __len__(self):
         return len(self._filelist)
+
+    def resize(self, size, axis):
+        return self.ds.resize(size, axis)
 
     @cached_property
     def attrs(self):
@@ -182,6 +188,9 @@ class QuantizedVarsizeArrayDs(object):
 
     def __len__(self):
         return len(self.ds)
+
+    def resize(self, size, axis):
+        return self.ds.resize(size, axis)
 
     @staticmethod
     def create(g : h5py.Group, name : str, size : int, sample_dimensionality : int, maxsize : Optional[int] = None):

@@ -129,9 +129,8 @@ def draw_semseg_logits(semseg : np.ndarray):
     return colored
 
 
-def _draw_sample(img : np.ndarray, sample : Union[Batch,dict], is_prediction : bool, labels : bool = True):
+def _draw_sample(img : np.ndarray, sample : Union[Batch,dict], labels : bool = True, color : Optional[tuple[int,int,int]] = None):
     linewidth = 2
-    color = PRED_COLOR if is_prediction else GT_COLOR
     if 'seg_image' in sample:
         semseg = draw_semseg_class_indices(sample['seg_image'])
         img //= 2
@@ -156,15 +155,15 @@ def _draw_sample(img : np.ndarray, sample : Union[Batch,dict], is_prediction : b
 def draw_prediction(sample_pred : Tuple[Batch,dict]):
     sample, pred = sample_pred
     img = np.ascontiguousarray(_with3channels_hwc(sample['image'].copy()))
-    _draw_sample(img, sample, False, False)
-    _draw_sample(img, pred, True, False)
+    _draw_sample(img, sample, False, GT_COLOR)
+    _draw_sample(img, pred, False, PRED_COLOR)
     return img
 
 
 def draw_dataset_sample(sample : Batch, label=False):
     sample = dict(sample.items())
     img = np.ascontiguousarray(_with3channels_hwc(sample['image'].copy()))
-    _draw_sample(img, sample, False, label)
+    _draw_sample(img, sample, label, None)
     return img
 
 

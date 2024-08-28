@@ -83,7 +83,7 @@ def whiten_batch(batch : Batch):
 
 
 def make_biwi_datasest(transform=None):
-    filename = join(os.environ['DATADIR'],'biwi.h5')
+    filename = join(os.environ['DATADIR'],'biwi-v2.h5')
     return Hdf5PoseDataset(filename, transform=transform, dataclass=Tag.ONLY_POSE)
 
 
@@ -412,7 +412,7 @@ def make_pose_estimation_loaders(
     return train_loader, test_loader, len(ds_train)
 
 
-def make_validation_loader(name, order = None, use_head_roi = True, num_workers=None):
+def make_validation_loader(name, order = None, use_head_roi = True, num_workers=None, batch_size = 32):
     test_trafo = transforms.Compose([
         dtr.offset_points_by_half_pixel, # For when pixels are considered grid cell centers
         dtr.PutRoiFromLandmarks(extend_to_forehead=use_head_roi)
@@ -445,7 +445,7 @@ def make_validation_loader(name, order = None, use_head_roi = True, num_workers=
 
     return dtr.PostprocessingDataLoader(
         ds, 
-        batch_size=32,
+        batch_size=batch_size,
         shuffle=False, 
         num_workers = num_workers,
         postprocess = None, 

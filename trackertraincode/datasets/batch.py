@@ -142,6 +142,10 @@ class Batch:
     def pin_memory(self):
         return Batch(self.meta, pin_memory(self._data))
 
+    def copy(self):
+        '''Shallow copy.'''
+        return Batch(self.meta, **self._data)
+
 
     class Collation(object):
         def __init__(self, divide_by_tag : bool = True, divide_by_image_size : bool = False, ragged_categories : Optional[Set[Any]] = None):

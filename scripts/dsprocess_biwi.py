@@ -16,13 +16,33 @@ import argparse
 import io
 from collections import defaultdict
 from zipfile import ZipFile
-from typing import Tuple
+from typing import Tuple, Sequence, Any, Optional, Dict
+from numpy.typing import NDArray
+
+from facenet_pytorch import MTCNN
 
 from trackertraincode.datasets.preprocessing import imdecode, imencode, extract_image_roi
 from trackertraincode.datasets.dshdf5pose import create_pose_dataset, FieldCategory
 
+from dsprocess_lapa import improve_roi_with_face_detector
+from filter_dataset import filter_file_by_frames
+
 C = FieldCategory
 
+# See "FSA-Net: Learning Fine-Grained Structure Aggregation for Head Pose Estimation from a Single Image"
+# as reference for the evaluation protocol. Uses MTCNN to generate bounding boxes.
+# https://github.com/shamangary/FSA-Net/blob/master/data/TYY_create_db_biwi.py
+# Differences:
+# * Projection using the camera matrix
+# * Keeping the aspect ratio in the face crop. (The bbox is extended along the shorter side.)
+# * Skip frames where MTCNN predicts a box far off the projected head center. (In FSA frames where skipped
+#   based on the inter-frame movement difference.)
+# * Where multiple detections: Take the one closest to the projected head center. (In FSA, the detection
+#   closest to a fixed position in the image was picked, approximating the heads locations)
+# * When generating the dataset with cropped images, a rotation correction is applied which is due to perspective.
+#   Thereby the angle spanned between the forward direction and the head position is added to the head orientation.
+#   Currently, this assumes a prescribed FOV.
+# * Only small number of images is affected by failed detections. 15074 of 15678 are good.
 
 PROJ_FOV = 65.
 HEAD_SIZE_MM = 100.
@@ -45,6 +65,19 @@ def get_camera_extrinsics(zf : ZipFile, fn) -> Tuple[Rotation,np.ndarray]:
     rot = Rotation.from_matrix(matrix)
     pos = np.array([*map(float, pos.split(' ')[:3])])
     return rot, pos
+
+
+Affine = Tuple[Rotation,NDArray[Any]]
+
+
+def affine_to_str(affine : Affine):
+    rot, pos = affine
+    return f"R={rot.as_matrix()}, T={pos}"
+
+
+def assert_extrinsics_have_identity_rotation(extrinsics : Sequence[Tuple[Any,Affine]]):
+    for id_, (rot,_) in extrinsics:
+        assert np.allclose(rot.as_matrix(), np.eye(3),atol=0.04, rtol=0.), f"Rotation {rot.as_matrix()} of {id_} is far from identity"
 
 
 class PinholeCam(object):
@@ -78,17 +111,22 @@ class PinholeCam(object):
 
 
 def compute_rotation_to_vector(pos):
-    # Computes a rotation which aligns 
-    # the x axes with the given head position.
+    # Computes a rotation which aligns the z axes with the given position.
+    # It's done in terms of a rotation matrix which represents the new aligned
+    # coordinate frame, i.e. it's z-axis will point towards "pos". This leaves
+    # a degree of rotation around the this axis. This is resolved by constraining
+    # the x axis to the horizonal plane (perpendicular to the global y-axis).
     z = pos / np.linalg.norm(pos)
     x = np.cross([0.,1.,0.],z)
+    x = x / np.linalg.norm(x)
     y = -np.cross(x, z)
+    y = y / np.linalg.norm(y)
     M = np.array([x,y,z]).T
     rot = Rotation.from_matrix(M)
     return rot
 
 
-def apply_local_head_origin_offset(rot, sz, offset):
+def transform_local_to_screen_offset(rot, sz, offset):
     offset = rot.apply(offset)*sz
     # world to screen transform:
     offset = offset[:2]
@@ -127,8 +165,7 @@ def find_cal_files(zf : ZipFile):
     return cal_files
 
 
-
-def read_data(zf, imagefile, cal):
+def read_data(zf, imagefile, cam_extrinsics_inv, do_crop : bool, mtcnn : MTCNN):
     posefile = imagefile[:-len('_rgb.png')]+'_pose.txt'
 
     imgbuffer = zf.read(imagefile)
@@ -138,26 +175,32 @@ def read_data(zf, imagefile, cal):
     with io.StringIO(zf.read(posefile).decode('ascii')) as f:
         rot, pos = get_pose_from_mat(f)
     
-    cam_inv = cal #utils.affine3d_inv(cal)
-    rot, pos = utils.affine3d_chain(cam_inv, (rot, pos))
-
-    rot_correction = compute_rotation_to_vector(pos)
-    rot = rot_correction.inv() * rot
+    rot, pos = utils.affine3d_chain(cam_extrinsics_inv, (rot, pos))
 
     cam = PinholeCam(PROJ_FOV, w, h)
     x, y = cam.project_to_image(pos)
     size = cam.project_size_to_image(pos[2], HEAD_SIZE_MM)
+
     roi = np.array([x-size, y-size, x+size, y+size])
 
-    img, offset = extract_image_roi(img, roi, 0.5, return_offset=True)
-    roi[[0,1]] += offset
-    roi[[2,3]] += offset
-    x += offset[0]
-    y += offset[1]
+    roi, ok = improve_roi_with_face_detector(img, roi, mtcnn, iou_threshold=0.01, confidence_threshold=0.9)
+    if not ok:
+        print (f"WARNING: MTCNN didn't find a face that overlaps with the projected head position. Frame {imagefile}.")
+
+    if do_crop:
+        rot_correction = compute_rotation_to_vector(pos)
+        # See the class PerspectiveCorrector.
+        rot = rot_correction.inv() * rot
+        img, offset = extract_image_roi(img, roi, 0.5, return_offset=True)
+        roi[[0,1]] += offset
+        roi[[2,3]] += offset
+        x += offset[0]
+        y += offset[1]
 
     # Offset in local frame is given as argument.
     # It was found by eyemeasure. It could perhaps be improved by optimizing it during the training.
-    offset = apply_local_head_origin_offset(rot, size, np.array([0.03,-0.35,-0.2]))
+    # It does not affect the rotation, and thus also not the benchmarks, so I'm free to do this.
+    offset = transform_local_to_screen_offset(rot, size, np.array([0.03,-0.35,-0.2]))
     x += offset[0]
     y += offset[1]
 
@@ -166,47 +209,56 @@ def read_data(zf, imagefile, cal):
         'coord' : np.array([x, y, size]),
         'roi' : roi, 
         'image' : img,
-    }
+    }, ok
 
 
-def generate_hdf5_dataset(source_file, outfilename, count=None):
+def generate_hdf5_dataset(source_file, outfilename, do_crop, count=None):
+    mtcnn = MTCNN(keep_all=True, device='cpu')
     every = 1
     with ZipFile(source_file,mode='r') as zf:
         calibration_data = { 
             k:get_camera_extrinsics(zf,fn) for k,fn in find_cal_files(zf).items() }
-        print ("Found calibration files: ", calibration_data.keys())
+        #print ("Found calibration files: ", calibration_data.keys())
+        print ("Sample camera params: ", affine_to_str(next(iter(calibration_data.values()))))
+        assert_extrinsics_have_identity_rotation(calibration_data.items())
         sequence_frames = find_image_file_names(zf)
         if count or every:
             for k, v in sequence_frames.items():
                 sequence_frames[k] = v[slice(0,count,every)]
-        sequence_lengths = [len(v) for v in sequence_frames.values()]
-        print ([(k,len(v)) for k,v in sequence_frames.items()])
-        N = sum(sequence_lengths)
+        max_num_frames = sum(len(v) for v in sequence_frames.values())
+        print ("Found videos (id,length): ",[(k,len(v)) for k,v in sequence_frames.items()])
         with h5py.File(outfilename, mode='w') as f:
-            ds_img = create_pose_dataset(f, C.image, count=N)
-            ds_roi = create_pose_dataset(f, C.roi, count=N)
-            ds_quats = create_pose_dataset(f, C.quat, count=N)
-            ds_coords = create_pose_dataset(f, C.xys, count=N)
-            f.create_dataset('sequence_starts', data = np.cumsum([0]+sequence_lengths))
+            ds_img = create_pose_dataset(f, C.image, count=max_num_frames)
+            ds_roi = create_pose_dataset(f, C.roi, count=max_num_frames)
+            ds_quats = create_pose_dataset(f, C.quat, count=max_num_frames)
+            ds_coords = create_pose_dataset(f, C.xys, count=max_num_frames)
             i = 0
-            with tqdm.tqdm(total=N) as bar:
+            sequence_starts = [0]
+            with tqdm.tqdm(total=max_num_frames) as bar:
                 for ident, frames in sequence_frames.items():
                     for fn in frames:
-                        sample = read_data(zf, fn, calibration_data[ident])
-                        ds_img[i] = sample['image']
-                        ds_quats[i] = sample['pose']
-                        ds_coords[i] = sample['coord']
-                        ds_roi[i] = sample['roi']
-                        i += 1
+                        sample, ok = read_data(zf, fn, calibration_data[ident], do_crop, mtcnn)
+                        if ok:
+                            ds_img[i] = sample['image']
+                            ds_quats[i] = sample['pose']
+                            ds_coords[i] = sample['coord']
+                            ds_roi[i] = sample['roi'].tolist()
+                            i += 1
                         bar.update(1)
+                    assert i != sequence_starts[-1], "Every sequence should have at least one good frame!"
+                    sequence_starts.append(i)
+            for ds in [ds_img, ds_roi, ds_quats, ds_coords]:
+                ds.resize(i, axis=0)
+            f.create_dataset('sequence_starts', data = sequence_starts)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Convert dataset")
     parser.add_argument('source', help="source file", type=str)
     parser.add_argument('destination', help='destination file', type=str, nargs='?', default=None)
+    parser.add_argument('--cropped', help='Crop to face and compensate pose for camera perspective', action='store_true', default=False)
     parser.add_argument('-n', dest = 'count', type=int, default=None)
     args = parser.parse_args()
     dst = args.destination if args.destination else \
         splitext(args.source)[0]+'.h5'
-    generate_hdf5_dataset(args.source, dst, args.count)
+    generate_hdf5_dataset(args.source, dst, args.cropped, args.count)

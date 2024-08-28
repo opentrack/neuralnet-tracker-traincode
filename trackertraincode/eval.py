@@ -158,8 +158,11 @@ def _apply_backtrafo(backtrafo : Affine2d, batch : Batch):
 @torch.no_grad()
 def predict(net : InferenceNetwork, images : List[Tensor], rois : Optional[Tensor] = None, focus_roi_expansion_factor : float = 1.2) -> Batch:
     '''
-    Unnormalized uint8 images
-    rois according to standard conventions
+    Args:
+        net : Inference function
+        images : Unnormalized uint8 images in HWC format
+        rois: Tensor in x0,y0,x1,y1 format
+        focus_roi_expansion_factor: Factor by which to enlarge the cropping region. Normally it's the squareified ROI.
     '''
     B = len(images)
     H,W,C = images[-1].shape

@@ -6,13 +6,14 @@
 import torch.multiprocessing
 torch.multiprocessing.set_sharing_strategy('file_system')
 
-from typing import Any, List, NamedTuple, Tuple, Dict
+from typing import Any, List, NamedTuple, Tuple, Dict, Callable
 import numpy as np
 import argparse
 import tqdm
 import tabulate
 import json
 import os
+import copy
 import pprint
 from numpy.typing import NDArray
 from matplotlib import pyplot
@@ -29,10 +30,16 @@ import trackertraincode.eval
 import trackertraincode.pipelines
 import trackertraincode.vis as vis
 import trackertraincode.utils as utils
+import trackertraincode.neuralnets.modelcomponents as modelcomponents
 
 from trackertraincode.eval import load_pose_network, predict
 
 load_pose_network = functools.lru_cache(maxsize=1)(load_pose_network)
+
+# According to this https://gmv.cast.uark.edu/scanning/hardware/microsoft-kinect-resourceshardware/
+# The horizontal field of view of the kinect is ..
+BIWI_HORIZONTAL_FOV = 57.
+
 
 class RoiConfig(NamedTuple):
     expansion_factor : float = 1.1
@@ -61,7 +68,28 @@ def determine_roi(sample : Batch, use_center_crop : bool):
     return torch.tensor([0,0,h,w], dtype=torch.float32)
 
 
-def compute_predictions_and_targets(loader, net, keys, roi_config : RoiConfig):
+EvalResults = Dict[str, Tensor]
+BatchPerspectiveCorrector = Callable[[Tensor,EvalResults],EvalResults]
+
+def make_perspective_corrector(fov : float) -> BatchPerspectiveCorrector:
+    '''
+    Args: 
+        fov Horizontal FOV in degree
+    '''
+    corrector = modelcomponents.PerspectiveCorrector(fov)
+    def apply_to_batch(image_sizes : Tensor, b : Dict[str,Tensor]):
+        assert 'pt3d_68' not in b, "Unsupported. Must be computed after correction."
+        out = copy.copy(b)
+        out['pose'] = corrector.corrected_rotation(image_sizes, b['coord'], b['pose'])
+        return out
+    return apply_to_batch
+
+
+def compute_predictions_and_targets(loader, net, keys, roi_config : RoiConfig, perspective_corrector : BatchPerspectiveCorrector | None) -> Tuple[EvalResults, EvalResults]:
+    """
+    Return:
+        Prediction and GT, each in a dict.
+    """
     preds   = defaultdict(list)
     targets = defaultdict(list)
     first = True
@@ -77,6 +105,10 @@ def compute_predictions_and_targets(loader, net, keys, roi_config : RoiConfig):
         if first:
             keys = list(frozenset(pred.keys()).intersection(frozenset(keys)))
             first = False
+        if perspective_corrector is not None:
+            pred = { k:pred[k] for k in keys }
+            image_sizes = torch.as_tensor([ img.shape[:2][::-1] for img in images ], device=images[0].device)
+            pred = perspective_corrector(image_sizes, pred)
         for k in keys:
             preds[k].append(pred[k])
             targets[k].append(torch.stack([sample[k] for sample in batch]))
@@ -86,7 +118,10 @@ def compute_predictions_and_targets(loader, net, keys, roi_config : RoiConfig):
     return preds, targets
 
 
-def iterate_predictions(loader, preds : Batch):
+def zip_gt_with_pred(loader, preds : Batch):
+    '''
+    Returns iterator over tuples of the Batch type.
+    '''
     pred_iter = (dtr.to_numpy(s) for s in preds.iter_frames())
     sample_iter = (dtr.to_numpy(sample) for batch in loader for sample in dtr.undo_collate(batch))
     yield from zip(sample_iter, pred_iter)
@@ -161,7 +196,15 @@ class TableBuilder:
 def report(net_filename, data_name, roi_config : RoiConfig, args : argparse.Namespace, builder : TableBuilder):
     loader = trackertraincode.pipelines.make_validation_loader(data_name, use_head_roi=roi_config.use_head_roi)
     net = load_pose_network(net_filename, args.device)
-    preds, targets = compute_predictions_and_targets(loader, net, ['coord','pose', 'roi', 'pt3d_68'], roi_config)
+    if data_name == 'biwi':
+        if args.perspective_correction:
+            correction_func = make_perspective_corrector(BIWI_HORIZONTAL_FOV)
+        else:
+            correction_func = None
+        preds, targets = compute_predictions_and_targets(loader, net, ['coord','pose', 'roi'], roi_config, correction_func)
+
+    else:
+        preds, targets = compute_predictions_and_targets(loader, net, ['coord','pose', 'roi', 'pt3d_68'], roi_config, None)
     # Position and size errors are measured relative to the ROI size. Hence in percent.
     poseerrs = trackertraincode.eval.PoseErr()(preds, targets)
     eulererrs = trackertraincode.eval.EulerAngleErrors()(preds, targets)
@@ -198,7 +241,7 @@ def report(net_filename, data_name, roi_config : RoiConfig, args : argparse.Name
         order = np.ascontiguousarray(np.argsort(quantity)[::-1])
         loader = trackertraincode.pipelines.make_validation_loader(data_name, order=order)
         new_preds = Batch(Metadata(0, batchsize=len(order)), **{k:v[order] for k,v in preds.items()})
-        worst_rot_iter = iterate_predictions(loader, new_preds)
+        worst_rot_iter = zip_gt_with_pred(loader, new_preds)
         history = DrawPredictionsWithHistory(data_name + '/' + net_filename)
         fig, btn = vis.matplotlib_plot_iterable(worst_rot_iter, history)
         fig.suptitle(data_name + ' / ' + str(roi_config) + ' / ' + net_filename)
@@ -236,6 +279,7 @@ if __name__ == '__main__':
     parser.add_argument('--vis', dest='vis', help='visualization of worst', default='none', choices=['none','kpts','rot','size'])
     parser.add_argument('--device', help='select device: cpu or cuda', default='cuda', type=str)
     parser.add_argument('--comprehensive-roi', action='store_true', default=False)
+    parser.add_argument('--perspective-correction', action='store_true', default=False)
     parser.add_argument('--json', type=str, default=None)
     parser.add_argument('--ds', type=str, default='aflw2k3d')
     args = parser.parse_args()
