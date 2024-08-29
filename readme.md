@@ -46,13 +46,15 @@ Evaluation
 
 Download AFLW2000-3D from http://www.cbsr.ia.ac.cn/users/xiangyuzhu/projects/3DDFA/main.htm.
 
+Biwi can be obtained from Kaggle https://www.kaggle.com/datasets/kmader/biwi-kinect-head-pose-database. I couldn't find a better source that is still accessible.
+
 Download a pytorch model checkpoint.
 
 * Baseline Ensemble: https://drive.google.com/file/d/19LrssD36COWzKDp7akxtJFeVTcltNVlR/view?usp=sharing
 * Additionally trained on Face Synthetics (BL+FS): https://drive.google.com/file/d/19zN8KICVEbLnGFGB5KkKuWrPjfet-jC8/view?usp=sharing
 * Labeling Ensemble (RA-300W-LP from Table 3): https://drive.google.com/file/d/13LSi6J4zWSJnEzEXwZxr5UkWndFXdjcb/view?usp=sharing
 
-### Option 1
+### Option 1 (AFLW2000 3D)
 
 Run `scripts/AFLW20003dEvaluation.ipynb`
 It should give results pretty close to the paper. The face crop selection is different though and so the result won't be exactly the same.
@@ -70,6 +72,15 @@ python scripts/evaluate_pose_network.py --ds aflw2k3d <path to model(.onnx|.ckpt
 ```
 
 It supports ONNX conversions as well as PyTorch checkpoints. For PyTorch the script must be adapted to the concrete model configuration for the checkpoint. If you wish to process the outputs further, like for averaging like in the paper, there is an option to generate json files.
+
+For BIWI, the steps are similar:
+```bash
+# Preprocess the data. Use the same output filename because this one is also hardcoded in the dataloader.
+python scripts/dsprocess_biwi.py <path to>/biwi.zip $DATADIR/biwi-v2.h5
+
+python scripts/evaluate_pose_network.py --ds biwi --perspective-correction <path to model(.onnx|.ckpt)>
+```
+You want the `--perspective-correction` for SOTA results. It enables that the orientation obtained from the face crop is corrected for camera perspective since with the Kinect's field of view, the assumption of orthographic projection no longer holds true. I.e. the pose from the crop is transformed into the global coordinate frame. W.r.t this frame it is compared with the original labels. Without the correction, the pose from the crop is taken directly for comparison with the labels.
 
 
 Integration in OpenTrack
