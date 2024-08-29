@@ -123,7 +123,8 @@ def load_pose_network(filename, device) -> InferenceNetwork:
                     enable_point_head=True, 
                     enable_face_detector=False, 
                     config='mobilenetv1', 
-                    enable_uncertainty=True)
+                    enable_uncertainty=True,
+                    backbone_args={'use_blurpool' : False})
                 state_dict = torch.load(modelfile)
                 net.load_state_dict(state_dict)
                 net.eval()
