@@ -185,7 +185,7 @@ def visualize(preds : List[Union[Poses,PosesWithStd]], checkpoints : List[str]):
                 axes[k+3].plot(pred.coord_scales[...,1,0])
                 axes[k+4].plot(pred.coord_scales[...,2,0])
                 axes[k+5].plot(pred.coord_scales[...,2,1])
-                for i, label in zip(range(k,k+6),['y-sz', 'x-sz', 'sz', 'x', 'y', 'x-y']):
+                for i, label in zip(range(k,k+6),['sz', 'x', 'y', 'x-y', 'y-sz', 'x-sz' ]):
                     axes[i].set(ylabel=label)
             elif pred.coord_scales is not None:
                 axes[k].plot(pred.coord_scales[...,2])
