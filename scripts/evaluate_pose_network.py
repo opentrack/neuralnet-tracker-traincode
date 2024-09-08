@@ -50,7 +50,6 @@ class RoiConfig(NamedTuple):
         crop = ['ROI','CC'][self.center_crop]
         return f'{"(H_roi)" if self.use_head_roi else "(F_roi)"}{crop}{self.expansion_factor:0.1f}'
 
-normal_roi_configs = [ RoiConfig() ]
 comprehensive_roi_configs = [ RoiConfig(*x) for x in [
     (1.2, False),
     (1.1, False),
@@ -253,7 +252,17 @@ def report(net_filename, data_name, roi_config : RoiConfig, args : argparse.Name
 def run(args):
     gui = []
     table_builder = TableBuilder()
-    roi_configs = comprehensive_roi_configs if args.comprehensive_roi else normal_roi_configs
+
+    if not args.comprehensive_roi:
+        if args.roi_expansion is not None:
+            roi_configs = [ RoiConfig(expansion_factor=args.roi_expansion) ]
+        else:
+            roi_configs = [ RoiConfig() ]
+    else:
+        assert args.roi_expansion is None, "Conflicting arguments"
+        roi_configs = comprehensive_roi_configs
+
+        
     datasets = args.ds.split('+')
     for net_filename in args.filenames:
         for name in datasets:
@@ -280,6 +289,7 @@ if __name__ == '__main__':
     parser.add_argument('--device', help='select device: cpu or cuda', default='cuda', type=str)
     parser.add_argument('--comprehensive-roi', action='store_true', default=False)
     parser.add_argument('--perspective-correction', action='store_true', default=False)
+    parser.add_argument('--roi-expansion', default=None, type=float)
     parser.add_argument('--json', type=str, default=None)
     parser.add_argument('--ds', type=str, default='aflw2k3d')
     args = parser.parse_args()

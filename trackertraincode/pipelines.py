@@ -83,7 +83,7 @@ def whiten_batch(batch : Batch):
 
 
 def make_biwi_datasest(transform=None):
-    filename = join(os.environ['DATADIR'],'biwi-v2.h5')
+    filename = join(os.environ['DATADIR'],'biwi-v3.h5')
     return Hdf5PoseDataset(filename, transform=transform, dataclass=Tag.ONLY_POSE)
 
 

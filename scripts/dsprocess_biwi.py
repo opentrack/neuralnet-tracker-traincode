@@ -1,6 +1,7 @@
 import os
 import sys
 import zipfile
+import pandas
 import numpy as np
 from os.path import join, dirname, basename, splitext
 import re
@@ -44,9 +45,16 @@ C = FieldCategory
 #   Currently, this assumes a prescribed FOV.
 # * Only small number of images is affected by failed detections. 15074 of 15678 are good.
 
+# Update:
+# This script can now load the anotations from
+# https://github.com/pcr-upm/opal23_headpose/blob/main/annotations/biwi_ann.txt
+# for best reproducability and fair comparison.
+
+
 PROJ_FOV = 65.
 HEAD_SIZE_MM = 100.
-PREFIX='faces_0/'
+PREFIX1='faces_0/'
+PREFIX2='kinect_head_pose_db/'
 
 
 def get_pose_from_mat(f):
@@ -133,19 +141,19 @@ def transform_local_to_screen_offset(rot, sz, offset):
     return offset
 
 
-def find_image_file_names(zf : ZipFile):
+def find_image_file_names(filelist : Sequence[str]):
     """
         Returns dict of filename lists. Keys are person numbers.
     """
-    regex = re.compile(PREFIX+r'(\d\d)/frame_(\d\d\d\d\d)_rgb.png')
+    regex = re.compile(PREFIX1+r'(\d\d)/frame_(\d\d\d\d\d)_rgb.png')
     samples = defaultdict(list)
-    for f in zf.filelist:
-        m = regex.match(f.orig_filename)
+    for f in filelist:
+        m = regex.match(f)
         if m is None:
             continue
         person = int(m.group(1))
         frame = m.group(2)
-        samples[person].append((frame, f.orig_filename))
+        samples[person].append((frame, f))
     for k, v in samples.items():
         # Sort by frame number then discard frame number
         v = sorted(v, key = lambda t: t[0])
@@ -154,7 +162,7 @@ def find_image_file_names(zf : ZipFile):
 
 
 def find_cal_files(zf : ZipFile):
-    regex = re.compile(PREFIX+r'(\d\d)/rgb.cal')
+    regex = re.compile(PREFIX1+r'(\d\d)/rgb.cal')
     cal_files = {}
     for f in zf.filelist:
         m = regex.match(f.orig_filename)
@@ -165,7 +173,7 @@ def find_cal_files(zf : ZipFile):
     return cal_files
 
 
-def read_data(zf, imagefile, cam_extrinsics_inv, do_crop : bool, mtcnn : MTCNN):
+def read_data(zf, imagefile, cam_extrinsics_inv, mtcnn : MTCNN | None, box_annotation : tuple[int,int,int,int] | None):
     posefile = imagefile[:-len('_rgb.png')]+'_pose.txt'
 
     imgbuffer = zf.read(imagefile)
@@ -181,21 +189,17 @@ def read_data(zf, imagefile, cam_extrinsics_inv, do_crop : bool, mtcnn : MTCNN):
     x, y = cam.project_to_image(pos)
     size = cam.project_size_to_image(pos[2], HEAD_SIZE_MM)
 
-    roi = np.array([x-size, y-size, x+size, y+size])
+    if box_annotation:
+        roi = np.asarray(box_annotation)
+    else:
+        roi = np.array([x-size, y-size, x+size, y+size])
 
-    roi, ok = improve_roi_with_face_detector(img, roi, mtcnn, iou_threshold=0.01, confidence_threshold=0.9)
-    if not ok:
-        print (f"WARNING: MTCNN didn't find a face that overlaps with the projected head position. Frame {imagefile}.")
-
-    if do_crop:
-        rot_correction = compute_rotation_to_vector(pos)
-        # See the class PerspectiveCorrector.
-        rot = rot_correction.inv() * rot
-        img, offset = extract_image_roi(img, roi, 0.5, return_offset=True)
-        roi[[0,1]] += offset
-        roi[[2,3]] += offset
-        x += offset[0]
-        y += offset[1]
+    if mtcnn is not None:
+        roi, ok = improve_roi_with_face_detector(img, roi, mtcnn, iou_threshold=0.01, confidence_threshold=0.9)
+        if not ok:
+            print (f"WARNING: MTCNN didn't find a face that overlaps with the projected head position. Frame {imagefile}.")
+    else:
+        ok = True
 
     # Offset in local frame is given as argument.
     # It was found by eyemeasure. It could perhaps be improved by optimizing it during the training.
@@ -212,8 +216,21 @@ def read_data(zf, imagefile, cam_extrinsics_inv, do_crop : bool, mtcnn : MTCNN):
     }, ok
 
 
-def generate_hdf5_dataset(source_file, outfilename, do_crop, count=None):
-    mtcnn = MTCNN(keep_all=True, device='cpu')
+def generate_hdf5_dataset(source_file, outfilename, opal_annotation : str | None, count : int | None =None):
+    mtcnn = None
+    sequence_frames = None
+    box_annotations = None
+    if opal_annotation:
+        dataframe = pandas.read_csv(opal_annotation, header=0, sep=';')
+        dataframe.columns = dataframe.columns[1:].append(pandas.Index([ 'dummy']))
+        filelist : list[str] = dataframe['image'].values.tolist()
+        filelist = [ f.replace(PREFIX2,PREFIX1) for f in filelist ]
+        box_annotations = dataframe[list('tl_x;tl_y;br_x;br_y'.split(';'))].values.tolist()
+        box_annotations = dict(zip(filelist, box_annotations))
+        sequence_frames = find_image_file_names(filelist)
+        assert sum(len(frames) for frames in sequence_frames.values()) == len(filelist)
+    else:
+        mtcnn = MTCNN(keep_all=True, device='cpu')
     every = 1
     with ZipFile(source_file,mode='r') as zf:
         calibration_data = { 
@@ -221,7 +238,8 @@ def generate_hdf5_dataset(source_file, outfilename, do_crop, count=None):
         #print ("Found calibration files: ", calibration_data.keys())
         print ("Sample camera params: ", affine_to_str(next(iter(calibration_data.values()))))
         assert_extrinsics_have_identity_rotation(calibration_data.items())
-        sequence_frames = find_image_file_names(zf)
+        if opal_annotation is None:
+            sequence_frames = find_image_file_names([ f.orig_filename for f in zf.filelist])
         if count or every:
             for k, v in sequence_frames.items():
                 sequence_frames[k] = v[slice(0,count,every)]
@@ -237,7 +255,7 @@ def generate_hdf5_dataset(source_file, outfilename, do_crop, count=None):
             with tqdm.tqdm(total=max_num_frames) as bar:
                 for ident, frames in sequence_frames.items():
                     for fn in frames:
-                        sample, ok = read_data(zf, fn, calibration_data[ident], do_crop, mtcnn)
+                        sample, ok = read_data(zf, fn, calibration_data[ident], mtcnn, box_annotations[fn] if box_annotations else None)
                         if ok:
                             ds_img[i] = sample['image']
                             ds_quats[i] = sample['pose']
@@ -256,9 +274,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Convert dataset")
     parser.add_argument('source', help="source file", type=str)
     parser.add_argument('destination', help='destination file', type=str, nargs='?', default=None)
-    parser.add_argument('--cropped', help='Crop to face and compensate pose for camera perspective', action='store_true', default=False)
     parser.add_argument('-n', dest = 'count', type=int, default=None)
+    parser.add_argument('--opal-annotation', help='Use annotations from opal paper', type=str, nargs='?', default=None)
     args = parser.parse_args()
     dst = args.destination if args.destination else \
         splitext(args.source)[0]+'.h5'
-    generate_hdf5_dataset(args.source, dst, args.cropped, args.count)
+    generate_hdf5_dataset(args.source, dst, args.opal_annotation, args.count)
