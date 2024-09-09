@@ -64,7 +64,7 @@ It should give results pretty close to the paper. The face crop selection is dif
 Run the preprocessing and then the evaluation script.
 
 ```bash
-# The output filename "aflw2k.h5" must match the hardcoded value in "pipelines.py"
+# Preprocess the data. The output filename "aflw2k.h5" must match the hardcoded value in "pipelines.py"
 python scripts/dsaflw2k_processing.py <path to>/AFLW2000-3D.zip $DATADIR/aflw2k.h5`
 
 # Will look in $DATADIR for aflw2k.h5.
@@ -73,14 +73,16 @@ python scripts/evaluate_pose_network.py --ds aflw2k3d <path to model(.onnx|.ckpt
 
 It supports ONNX conversions as well as PyTorch checkpoints. For PyTorch the script must be adapted to the concrete model configuration for the checkpoint. If you wish to process the outputs further, like for averaging like in the paper, there is an option to generate json files.
 
-For BIWI, the steps are similar:
+Evaluation on the Biwi benchmark works similarly. However, we use the annotations file from https://github.com/pcr-upm/opal23_headpose in order to adhere to the experimental protocol. It can be found under https://github.com/pcr-upm/opal23_headpose/blob/main/annotations/biwi_ann.txt.
 ```bash
-# Preprocess the data. Use the same output filename because this one is also hardcoded in the dataloader.
-python scripts/dsprocess_biwi.py <path to>/biwi.zip $DATADIR/biwi-v2.h5
+# Preprocess the data.
+python --opal-annotation <path to>/biwi_ann.txt scripts/dsprocess_biwi.py <path to>/biwi.zip $DATADIR/biwi-v3.h5
 
-python scripts/evaluate_pose_network.py --ds biwi --perspective-correction <path to model(.onnx|.ckpt)>
+# Will look in $DATADIR for biwi-v3.h5.
+python scripts/evaluate_pose_network.py --ds biwi --roi-expansion 0.8 --perspective-correction <path to model(.onnx|.ckpt)>
 ```
 You want the `--perspective-correction` for SOTA results. It enables that the orientation obtained from the face crop is corrected for camera perspective since with the Kinect's field of view, the assumption of orthographic projection no longer holds true. I.e. the pose from the crop is transformed into the global coordinate frame. W.r.t this frame it is compared with the original labels. Without the correction, the pose from the crop is taken directly for comparison with the labels.
+Setting `--roi-expansion 0.8` causes the cropped area to be smaller relative to the bounding box annotation. That is also necessary for good results because the annotations have much larger bounding boxes than the networks were trained with.
 
 
 Integration in OpenTrack
