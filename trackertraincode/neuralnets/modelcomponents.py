@@ -3,7 +3,6 @@ from __future__ import annotations
 from os.path import join, dirname
 from typing import Tuple, Union, Optional
 import numpy as np
-import math
 import torch
 import torch.nn as nn
 import torch.nn.init
@@ -219,65 +218,6 @@ def freeze_norm_stats(m):
         m.eval()
         for p in m.parameters():
             p.requires_grad = False
-
-
-class PerspectiveCorrector:
-    def __init__(self, fov):
-        self._fov = fov
-        self.f = 1. / math.tan(fov*math.pi/180.*0.5)
-    
-    def corrected_rotation(self, image_sizes : Tensor, coord : Tensor, pose : Tensor):
-        '''
-            Explanation though top view
-                                       ^ face-local z-axis
-                         z-axis ^      |   ^ direction under which the CNN "sees" the face through it's crop
-                                |     _|__/
-                                |    /    \
-                                |   | face |
-                                |    \ __ /
-                                |     /         Note: <----> marks the face crop
-                                |    / 
-           -----------------------<-x->-------------- screen
-                                |  / xy_normalized
-                              f | /
-                                |/
-                        camera  x ------> x-axis
-            
-            Thus, it is apparent that the CNN sees the face approximately under an angle spanned by the forward
-            direction and the 3d position of the face. The more wide-angle the lense is the stronger the effect. 
-            As usual perspective distortion within the crop is neglected.
-            Hence, we assume that the detected rotation is given w.r.t to a coordinate system whose z-axis is
-            aligned with the position vector as illustrated. Consequently, the resulting pose is simply the
-            cnn-output transformed into the world coordinate system.
-            
-            Beware, position correction is handled in the evaluation scripts. It's much simpler as we only have
-            to consider the offset and scaling due to the cropping and resizing to the CNN input size.
-
-        Args:
-            image_size: B x [Width, Height]
-        '''
-        xy_image = coord[...,:2]
-        half_image_size_tensor = 0.5*image_sizes
-        xy_normalized = (xy_image - half_image_size_tensor) / half_image_size_tensor[0]
-        fs = torch.as_tensor(self.f, device=xy_image.device).expand_as(xy_normalized[...,:-1])
-        xyz = torch.cat([xy_normalized, fs],dim=-1)
-        m = PerspectiveCorrector.make_look_at_matrix(xyz)
-        out = torchquaternion.mult(torchquaternion.from_matrix(m), pose)
-        return out
-
-    def make_look_at_matrix(pos : Tensor):
-        '''Computes a rotation matrix where the z axes is aligned with the argument vector.
-        
-        This leaves a degree of rotation around the this axis. This is resolved by constraining
-        the x axis to the horizonal plane (perpendicular to the global y-axis).
-        '''
-        z = pos / torch.norm(pos, dim=-1, keepdim=True)
-        x = torch.cross(*torch.broadcast_tensors(pos.new_tensor([0.,1.,0.]),z),dim=-1)
-        x = x / torch.norm(x, dim=-1, keepdim=True)
-        y = torch.cross(z, x, dim=-1)
-        y = y / torch.norm(x, dim=-1, keepdim=True)
-        M = torch.stack([x,y,z],dim=-1)
-        return M
 
 
 def quaternion_from_features(z : Tensor):

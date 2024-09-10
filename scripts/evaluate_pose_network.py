@@ -6,7 +6,7 @@
 import torch.multiprocessing
 torch.multiprocessing.set_sharing_strategy('file_system')
 
-from typing import Any, List, NamedTuple, Tuple, Dict, Callable
+from typing import Any, List, NamedTuple, Tuple, Dict, Callable, Literal
 import numpy as np
 import argparse
 import tqdm
@@ -17,7 +17,6 @@ import copy
 import pprint
 from numpy.typing import NDArray
 from matplotlib import pyplot
-from os.path import basename
 import functools
 import torch
 from torch import Tensor
@@ -26,13 +25,11 @@ from os.path import commonprefix, relpath
 
 from trackertraincode.datasets.batch import Batch, Metadata
 import trackertraincode.datatransformation as dtr
-import trackertraincode.eval
 import trackertraincode.pipelines
 import trackertraincode.vis as vis
 import trackertraincode.utils as utils
-import trackertraincode.neuralnets.modelcomponents as modelcomponents
 
-from trackertraincode.eval import load_pose_network, predict
+from trackertraincode.eval import load_pose_network, predict, compute_opal_paper_alignment, PerspectiveCorrector
 
 load_pose_network = functools.lru_cache(maxsize=1)(load_pose_network)
 
@@ -70,21 +67,10 @@ def determine_roi(sample : Batch, use_center_crop : bool):
 EvalResults = Dict[str, Tensor]
 BatchPerspectiveCorrector = Callable[[Tensor,EvalResults],EvalResults]
 
-def make_perspective_corrector(fov : float) -> BatchPerspectiveCorrector:
-    '''
-    Args: 
-        fov Horizontal FOV in degree
-    '''
-    corrector = modelcomponents.PerspectiveCorrector(fov)
-    def apply_to_batch(image_sizes : Tensor, b : Dict[str,Tensor]):
-        assert 'pt3d_68' not in b, "Unsupported. Must be computed after correction."
-        out = copy.copy(b)
-        out['pose'] = corrector.corrected_rotation(image_sizes, b['coord'], b['pose'])
-        return out
-    return apply_to_batch
+AlignmentScheme = Literal['perspective','opal23_headpose','none']
 
 
-def compute_predictions_and_targets(loader, net, keys, roi_config : RoiConfig, perspective_corrector : BatchPerspectiveCorrector | None) -> Tuple[EvalResults, EvalResults]:
+def compute_predictions_and_targets(loader, net, keys, roi_config : RoiConfig) -> Tuple[EvalResults, EvalResults]:
     """
     Return:
         Prediction and GT, each in a dict.
@@ -104,16 +90,52 @@ def compute_predictions_and_targets(loader, net, keys, roi_config : RoiConfig, p
         if first:
             keys = list(frozenset(pred.keys()).intersection(frozenset(keys)))
             first = False
-        if perspective_corrector is not None:
-            pred = { k:pred[k] for k in keys }
-            image_sizes = torch.as_tensor([ img.shape[:2][::-1] for img in images ], device=images[0].device)
-            pred = perspective_corrector(image_sizes, pred)
         for k in keys:
             preds[k].append(pred[k])
             targets[k].append(torch.stack([sample[k] for sample in batch]))
         bar.update(len(batch))
     preds = { k:torch.cat(v) for k,v in preds.items() }
     targets = { k:torch.cat(v) for k,v in targets.items() }
+    return preds, targets
+
+
+def compute_predictions_and_targets_biwi(loader, net, keys, roi_config : RoiConfig, alignment : AlignmentScheme) -> Tuple[EvalResults, EvalResults]:
+    """
+    Return:
+        Prediction and GT, each in a dict.
+    """
+    preds   = defaultdict(list)
+    targets = defaultdict(list)
+    other = defaultdict(list)
+    bar = tqdm.tqdm(total = len(loader.dataset))
+    first = True
+    for batch in utils.iter_batched(loader, 32):
+        images = [ sample['image'] for sample in batch ]
+        rois = torch.stack([ determine_roi(sample, roi_config.center_crop) for sample in batch ])
+        pred = predict(
+            net, 
+            images, 
+            rois=rois, 
+            focus_roi_expansion_factor=roi_config.expansion_factor)
+        if first:
+            keys = list(frozenset(pred.keys()).intersection(frozenset(keys)))
+            first = False
+        for k in keys:
+            preds[k].append(pred[k])
+            targets[k].append(torch.stack([sample[k] for sample in batch]))
+        other['image_sizes'].extend([ img.shape[:2][::-1] for img in images ])
+        other['individual'].extend([ sample['individual'] for sample in batch ])
+        bar.update(len(batch))
+    preds = { k:torch.cat(v) for k,v in preds.items() }
+    targets = { k:torch.cat(v) for k,v in targets.items() }
+    other = { k:np.asarray(v) for k,v in other.items() }
+    if alignment == 'perspective':
+        corrector = PerspectiveCorrector(BIWI_HORIZONTAL_FOV)
+        assert 'pt3d_68' not in targets, "Unsupported. Must be computed after correction."
+        preds['pose'] = corrector.corrected_rotation(torch.from_numpy(other['image_sizes']), preds['coord'], preds['pose'])
+    elif alignment == 'opal23_headpose':
+        assert 'pt3d_68' not in targets, "Unsupported. Must be computed after correction."
+        preds['pose'] = compute_opal_paper_alignment(preds['pose'],targets['pose'], other['individual'])      
     return preds, targets
 
 
@@ -196,11 +218,7 @@ def report(net_filename, data_name, roi_config : RoiConfig, args : argparse.Name
     loader = trackertraincode.pipelines.make_validation_loader(data_name, use_head_roi=roi_config.use_head_roi)
     net = load_pose_network(net_filename, args.device)
     if data_name == 'biwi':
-        if args.perspective_correction:
-            correction_func = make_perspective_corrector(BIWI_HORIZONTAL_FOV)
-        else:
-            correction_func = None
-        preds, targets = compute_predictions_and_targets(loader, net, ['coord','pose', 'roi'], roi_config, correction_func)
+        preds, targets = compute_predictions_and_targets_biwi(loader, net, ['coord','pose', 'roi'], roi_config, args.alignment_scheme)
 
     else:
         preds, targets = compute_predictions_and_targets(loader, net, ['coord','pose', 'roi', 'pt3d_68'], roi_config, None)
@@ -288,7 +306,7 @@ if __name__ == '__main__':
     parser.add_argument('--vis', dest='vis', help='visualization of worst', default='none', choices=['none','kpts','rot','size'])
     parser.add_argument('--device', help='select device: cpu or cuda', default='cuda', type=str)
     parser.add_argument('--comprehensive-roi', action='store_true', default=False)
-    parser.add_argument('--perspective-correction', action='store_true', default=False)
+    parser.add_argument('--alignment-scheme', choices=['perspective','opal23_headpose','none'], default='none')
     parser.add_argument('--roi-expansion', default=None, type=float)
     parser.add_argument('--json', type=str, default=None)
     parser.add_argument('--ds', type=str, default='aflw2k3d')

@@ -4,6 +4,8 @@ import torch.nn.functional as F
 from typing import Iterable, Optional, Tuple, Dict, Any, Union, List, NamedTuple
 from copy import copy
 from numpy.typing import NDArray
+from scipy.spatial.transform import Rotation
+import math
 
 import torch
 from torch import nn
@@ -13,6 +15,7 @@ from trackertraincode.datasets.batch import Batch, Metadata
 from trackertraincode.neuralnets.affine2d import Affine2d
 
 import trackertraincode.datatransformation as dtr
+import trackertraincode.neuralnets.torchquaternion as torchquaternion
 import trackertraincode.utils as utils
 from trackertraincode.pipelines import whiten_image
 
@@ -339,3 +342,103 @@ class KptNME:
             ((a <= abs_yaw_deg) & (abs_yaw_deg < b)) for (a,b) in bounds_list
         ]
         return masks
+
+
+def _compute_displacement(mean_rot : Rotation, rots : Rotation):
+    return (mean_rot.inv() * rots).as_rotvec()
+
+
+def _compute_mean_rotation(rots : Rotation, tol=0.0001, max_iter=100000):
+    # Adapted from https://github.com/pcr-upm/opal23_headpose/blob/main/test/evaluator.py#L111C1-L126C27
+    # Exclude samples outside the sphere of radius pi/2 for convergence
+    rots = rots[rots.magnitude() < np.pi/2]
+    mean_rot = rots[0]
+    for _ in range(max_iter):
+        displacement = _compute_displacement(mean_rot, rots)
+        displacement = np.mean(displacement, axis=0)
+        d_norm = np.linalg.norm(displacement)
+        if d_norm < tol:
+            break
+        mean_rot = mean_rot * Rotation.from_rotvec(displacement)
+    return mean_rot
+
+
+def compute_opal_paper_alignment(pose_pred : Tensor, pose_target : Tensor, cluster_ids : NDArray[np.int32]):
+    assert pose_pred.get_device() == -1 # CPU
+    assert pose_target.get_device() == -1 # CPU
+    clusters = np.unique(cluster_ids)
+    out = torch.empty_like(pose_pred)
+    print ("Aligning clusters", clusters)
+    for id_ in clusters:
+        mask = cluster_ids == id_
+        pred_rot =  Rotation.from_quat(pose_pred[mask].numpy())
+        target_rot = Rotation.from_quat(pose_target[mask].numpy())
+        align_rot = _compute_mean_rotation(target_rot.inv()*pred_rot)
+        #print (f"id = {id_}, align = {align_rot.magnitude()*180./np.pi}, {np.count_nonzero(mask)} items")
+        # (P (T^-1 * P)^-1 )^-1 T
+        #    ----+----
+        #        align_rot
+        # => (P P^-1 T)^-1 T = Identity
+        pred_rot = pred_rot * align_rot.inv()
+        out[mask] = torch.from_numpy(pred_rot.as_quat()).to(pose_pred.dtype)
+    return out
+
+
+class PerspectiveCorrector:
+    def __init__(self, fov):
+        self._fov = fov
+        self.f = 1. / math.tan(fov*math.pi/180.*0.5)
+
+    def corrected_rotation(self, image_sizes : Tensor, coord : Tensor, pose : Tensor):
+        '''
+            Explanation though top view
+                                       ^ face-local z-axis
+                         z-axis ^      |   ^ direction under which the CNN "sees" the face through it's crop
+                                |     _|__/
+                                |    /    \
+                                |   | face |
+                                |    \ __ /
+                                |     /         Note: <----> marks the face crop
+                                |    / 
+           -----------------------<-x->-------------- screen
+                                |  / xy_normalized
+                              f | /
+                                |/
+                        camera  x ------> x-axis
+
+            Thus, it is apparent that the CNN sees the face approximately under an angle spanned by the forward
+            direction and the 3d position of the face. The more wide-angle the lense is the stronger the effect. 
+            As usual perspective distortion within the crop is neglected.
+            Hence, we assume that the detected rotation is given w.r.t to a coordinate system whose z-axis is
+            aligned with the position vector as illustrated. Consequently, the resulting pose is simply the
+            cnn-output transformed into the world coordinate system.
+
+            Beware, position correction is handled in the evaluation scripts. It's much simpler as we only have
+            to consider the offset and scaling due to the cropping and resizing to the CNN input size.
+
+        Args:
+            image_size: B x [Width, Height]
+        '''
+        xy_image = coord[...,:2]
+        half_image_size_tensor = 0.5*image_sizes
+        xy_normalized = (xy_image - half_image_size_tensor) / half_image_size_tensor[0]
+        fs = torch.as_tensor(self.f, device=xy_image.device).expand_as(xy_normalized[...,:-1])
+        xyz = torch.cat([xy_normalized, fs],dim=-1)
+        m = PerspectiveCorrector.make_look_at_matrix(xyz)
+        out = torchquaternion.mult(torchquaternion.from_matrix(m), pose)
+        return out
+
+    def make_look_at_matrix(pos : Tensor):
+        '''Computes a rotation matrix where the z axes is aligned with the argument vector.
+
+        This leaves a degree of rotation around the this axis. This is resolved by constraining
+        the x axis to the horizonal plane (perpendicular to the global y-axis).
+        '''
+        z = pos / torch.norm(pos, dim=-1, keepdim=True)
+        x = torch.cross(*torch.broadcast_tensors(pos.new_tensor([0.,1.,0.]),z),dim=-1)
+        x = x / torch.norm(x, dim=-1, keepdim=True)
+        y = torch.cross(z, x, dim=-1)
+        y = y / torch.norm(x, dim=-1, keepdim=True)
+        M = torch.stack([x,y,z],dim=-1)
+        return M
+        
