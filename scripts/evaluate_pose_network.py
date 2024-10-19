@@ -221,7 +221,7 @@ def report(net_filename, data_name, roi_config : RoiConfig, args : argparse.Name
         preds, targets = compute_predictions_and_targets_biwi(loader, net, ['coord','pose', 'roi'], roi_config, args.alignment_scheme)
 
     else:
-        preds, targets = compute_predictions_and_targets(loader, net, ['coord','pose', 'roi', 'pt3d_68'], roi_config, None)
+        preds, targets = compute_predictions_and_targets(loader, net, ['coord','pose', 'roi', 'pt3d_68'], roi_config)
     # Position and size errors are measured relative to the ROI size. Hence in percent.
     poseerrs = trackertraincode.eval.PoseErr()(preds, targets)
     eulererrs = trackertraincode.eval.EulerAngleErrors()(preds, targets)
