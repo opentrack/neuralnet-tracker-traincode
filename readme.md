@@ -1,16 +1,23 @@
-# OpNet: On the power of data augmentation for head pose estimation
+OpenTrack "NeuralNet Tracker" Training & Evaluation
+===================================================
 
-Intro
------
+/ [**"OpNet: On the power of data augmentation for head pose estimation"**](https://arxiv.org/abs/2407.05357)
 
-This branch contains the code for the publication (https://arxiv.org/abs/2407.05357) on creating a neural network for human head pose estimation.
-It is, with minor alterations a snapshot of ongoing development in the `master` branch.
+If you are looking for the code for the publication please note the [`paper` branch](https://github.com/opentrack/neuralnet-tracker-traincode/tree/paper),
+which is a special tailored snapshot for the publication.
 
-This readme contains instructions for evaluation and training.
+This repository contains the code to train the neural nets for the  NeuralNet tracker plugin of [Opentrack](https://github.com/opentrack/opentrack). It allows head tracking with a simple webcam.
 
-### Addendum to the paper
 
-I forgot to mention that the variance prediction heads have Batchnorm at the very end. With everything else fixed I got pretty bad results without BN.
+Overview
+--------
+
+The tracker plugin is based on deep learning, i.e. neural network models optimized using data to perform their tasks.
+There are two parts: A localizer network, and the actual pose estimation network.
+The localizer tries to find a single face and generates a bounding box around it from where a crop is extracted for the pose network to analyze.
+
+In the following there are steps outlined to reproduce the networks
+delivered with OpenTrack. This includes training and evaluation. However, the instructions are currently focussed on the pose estimator. At the end there is a section on the localizer.
 
 
 Install
@@ -88,7 +95,6 @@ Setting `--roi-expansion 0.8` causes the cropped area to be smaller relative to 
 Integration in OpenTrack
 ------------------------
 
-OpenTrack https://github.com/opentrack/opentrack, is a FOSS head tracking software.
 Choose the "Neuralnet" tracker plugin. It currently comes with some older models which don't
 achieve the same SOTA benchmark results but are a little bit more noise resistent and invariant
 to eye movements.
@@ -236,3 +242,12 @@ files. The other label fields are label data and should be relatively self-expla
 
 Relevant code for reading and writing those files can be found in `trackertraincode/datasets/dshdf5.py`, 
 `trackertraincode/datasets/dshdf5pose.py` and the preprocessing scripts `scripts/dsprocess_*.py`.
+
+Localizer Network
+-----------------
+
+There is an old notebook to train this network.
+
+The training data is a processed version of the Wider Face dataset. The processing accounts for the fact that Wider Face contains images with potentially many faces. Therefore, sections which contain only one face or none are extracted.
+
+The localizer network is trained to generate a "heatmap" with a peak where it suspects the center of a face. In addition, parameters of a bounding box are outputted.
