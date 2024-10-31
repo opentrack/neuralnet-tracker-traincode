@@ -7,6 +7,7 @@ import torch.nn as nn
 from torch import Tensor
 import torchvision.models
 from trackertraincode.neuralnets.math import inv_smoothclip0, smoothclip0
+import trackertraincode.neuralnets.io
 
 from trackertraincode.neuralnets.modelcomponents import (
     freeze_norm_stats, 
@@ -109,8 +110,8 @@ class Landmarks3dOutput(nn.Module):
         if self.enable_uncertainty:
             # pointscales = NLL.FeaturesAsUncorrelatedVariance(num_features, 68, torch.full((68,)))
             # shapescales = NLL.FeaturesAsUncorrelatedVariance(num_features, 50, torch.full((50,)))
-            self.point_distrib_scales = NLL.UncorrelatedVarianceParameter(68)
-            self.shape_distrib_scales = NLL.UncorrelatedVarianceParameter(50)
+            self.point_distrib_scales = NLL.DiagonalScaleParameter(68)
+            self.shape_distrib_scales = NLL.DiagonalScaleParameter(50)
 
     def forward(self, z, quats, coords) -> Dict[str, Tensor]:
         shapeparam = self.shapenet(z)
@@ -136,7 +137,7 @@ class DirectQuaternionWithNormalization(nn.Module):
         self.linear = nn.Linear(num_features, 4, bias=True)
         self.linear.bias.data[torchquaternion.iw] = inv_smoothclip0(torch.as_tensor(0.1))
         if enable_uncertainty:
-            self.uncertainty_net = NLL.FeaturesAsTriangularCovFactor(
+            self.uncertainty_net = NLL.FeaturesAsTriangularScale(
                 num_features, 3)
     
     def forward(self, x) -> Dict[str, Tensor]:
@@ -161,7 +162,7 @@ class BoundingBox(nn.Module):
         self.linear = nn.Linear(num_features, 4)
         self.linear.bias.data[...] = torch.tensor([0.0, 0.0, 0.5, 0.5])
         if enable_uncertainty:
-            self.scales = NLL.UncorrelatedVarianceParameter(4)
+            self.scales = NLL.DiagonalScaleParameter(4)
 
     def forward(self, x : Tensor) -> Dict[str, Tensor]:
         z = self.linear(x)
@@ -187,8 +188,7 @@ class PositionSizeOutput(nn.Module):
         self.linear_size = nn.Linear(num_features, 1)
         self.linear_size.bias.data.fill_(0.5)
         if enable_uncertainty:
-            #self.scales = NLL.FeaturesAsUncorrelatedVariance(num_features, 3)
-            self.scales = NLL.FeaturesAsTriangularCovFactor(num_features, 3)
+            self.scales = NLL.FeaturesAsTriangularScale(num_features, 3)
 
     def forward(self, x : Tensor):
         coord = torch.cat([
@@ -216,11 +216,13 @@ def create_pose_estimator_backbone(config : str, args : Dict[str,Any]):
 
 class NetworkWithPointHead(nn.Module):
     def __init__(
-            self, enable_point_head=True, 
+            self, 
+            enable_point_head=True, 
             enable_face_detector=False, 
             config='mobilenetv1', 
             enable_uncertainty=False,
             dropout_prob = 0.5,
+            use_local_pose_offset = True,
             backbone_args = None):
         super(NetworkWithPointHead, self).__init__()
         self.enable_point_head = enable_point_head
@@ -228,21 +230,34 @@ class NetworkWithPointHead(nn.Module):
         self.finetune = False
         self.config = config
         self.enable_uncertainty = enable_uncertainty
-        if backbone_args is None:
-            backbone_args = {}
+        self.use_local_pose_offset = use_local_pose_offset
+        self._backbone_args = {} if (backbone_args is None) else backbone_args
         self._input_resolution = (129, 97)
 
-        self.convnet = create_pose_estimator_backbone(config, backbone_args)
+        self.convnet = create_pose_estimator_backbone(config, self._backbone_args)
         num_features = self.convnet.num_features
         self.dropout = nn.Dropout(dropout_prob)
 
         self.boxnet = BoundingBox(num_features, enable_uncertainty)
         self.posnet = PositionSizeOutput(num_features, enable_uncertainty)
         self.quatnet = DirectQuaternionWithNormalization(num_features, enable_uncertainty)
+        self.local_pose_offset = LocalToGlobalCoordinateOffset()
+        self.local_pose_offset_kpts = LocalToGlobalCoordinateOffset()
         if enable_point_head:
             self.landmarks = Landmarks3dOutput(num_features, enable_uncertainty)
         if enable_face_detector:
             self.face_detector = nn.Linear(num_features, 1, bias=True)
+
+    def get_config(self):
+        return {
+            'enable_point_head' : self.enable_point_head,
+            'enable_face_detector' : self.enable_face_detector,
+            'config' : self.config,
+            'enable_uncertainty' : self.enable_uncertainty,
+            'dropout_prob' : self.dropout.p,
+            'use_local_pose_offset' : self.use_local_pose_offset,
+            'backbone_args' : self._backbone_args
+        }
 
     @property
     def input_resolutions(self) -> Tuple[int]:
@@ -256,14 +271,6 @@ class NetworkWithPointHead(nn.Module):
     def name(self) -> str:
         return type(self).__name__+'_'+self.config
 
-
-    def load_partial(self, state_dict):
-        mine = self.state_dict()
-        assert (not frozenset(state_dict.keys()).difference(frozenset(mine.keys()))), f"Failed to load model dict. Keys {frozenset(state_dict.keys()).difference(frozenset(mine.keys()))} not found in present model"
-        mine.update(state_dict)
-        self.load_state_dict(mine)
-
-
     def forward(self, x):
         assert x.shape[2] in self.input_resolutions and \
                x.shape[3] == x.shape[2]
@@ -275,10 +282,23 @@ class NetworkWithPointHead(nn.Module):
 
         out.update(self.posnet(x))
         out.update(self.quatnet(x))
+
+        if self.use_local_pose_offset:
+            out.update({
+                'hidden_pose' : out['pose'],
+                'hidden_coord' : out['coord']
+            })
+            quats, coords = self.local_pose_offset(out.pop('pose'), out.pop('coord'))
+            out.update({
+                'pose' : quats,
+                'coord' : coords
+            })
         
         quats, coords = out['pose'], out['coord']
 
         if self.enable_point_head:
+            if self.use_local_pose_offset:
+                quats, coords = self.local_pose_offset_kpts(out['hidden_pose'], out['hidden_coord'])
             out.update(self.landmarks(x, quats, coords))
 
         if self.enable_face_detector:
@@ -308,3 +328,21 @@ class NetworkWithPointHead(nn.Module):
             self.convnet.apply(freeze_norm_stats)
 
 
+save_model = trackertraincode.neuralnets.io.save_model
+
+
+def load_model(filename : str):
+    def load_legacy(filename : str):
+        sd = torch.load(filename)
+        net = NetworkWithPointHead(
+            enable_point_head=True,
+            enable_face_detector=False,
+            config='resnet18',
+            enable_uncertainty=True,
+            backbone_args = {'use_blurpool' : False}
+        )
+        net.load_state_dict(sd, strict=True)
+    try:
+        return trackertraincode.neuralnets.io.load_model(filename, [NetworkWithPointHead])
+    except trackertraincode.neuralnets.io.InvalidFileFormatError:
+        return load_legacy(filename)

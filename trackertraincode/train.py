@@ -1,3 +1,4 @@
+import itertools
 from matplotlib import pyplot
 from collections import namedtuple, defaultdict
 import numpy as np
@@ -7,9 +8,11 @@ import tqdm
 import multiprocessing
 import queue
 import time
+import pickle
 import dataclasses
 import copy
 import os
+import math
 
 from torch import Tensor
 import torch
@@ -18,13 +21,74 @@ from torch.optim.lr_scheduler import LambdaLR, CyclicLR
 
 
 from trackertraincode.datasets.batch import Batch
+import trackertraincode.neuralnets.io
 import trackertraincode.utils as utils
 
 
 def weighted_mean(x : Tensor, w : Tensor, dim) -> Tensor:
     return torch.sum(x*w, dim).div(torch.sum(w,dim))
 
-Criterion = namedtuple('Criterion', 'name f w', defaults=(None,None,1.))
+
+class LossVal(NamedTuple):
+    val : Tensor
+    weight : float
+    name : str
+
+
+def concatenated_lossvals_by_name(vals : list[LossVal]):
+    '''Sorts by name and concatenates.
+
+    Assumes that names can occur multiple times. Then corresponding weights and
+    values are concatenated. Useful for concatenating the loss terms from different
+    sub-batches.
+
+    Return:
+        Dict[name,(values,weights)]
+    '''
+    value_lists = defaultdict(list)
+    weight_lists = defaultdict(list)
+    for v in vals:
+        value_lists[v.name].append(v.val)
+        weight_lists[v.name].append(v.weight)
+    return {
+        k:(torch.concat(value_lists[k]),torch.concat(weight_lists[k])) for k in value_lists
+    }
+
+
+class Criterion(NamedTuple):
+    name : str
+    f : Callable[[Batch,Batch],Tensor]
+    w : Union[float,Callable[[int],float]]
+
+    def evaluate(self, pred, batch, step) -> List[LossVal]:
+        val = self.f(pred,batch)
+        w = self._eval_weight(step)
+        return [ LossVal(val, w, self.name) ]
+
+    def _eval_weight(self, step):
+        if isinstance(self.w, float):
+            return self.w
+        else:
+            return self.w(step)
+
+
+class CriterionGroup(NamedTuple):
+    criterions : List[Union['CriterionGroup',Criterion]]
+    name : str = ''
+    w : Union[float,Callable[[int],float]] = 1.0
+
+    def _eval_weight(self, step):
+        if isinstance(self.w, float):
+            return self.w
+        else:
+            return self.w(step)
+
+    def evaluate(self, pred, batch, step) -> List[LossVal]:
+        w = self._eval_weight(step)
+        lossvals = sum((c.evaluate(pred, batch, step) for c in self.criterions), start=[])
+        lossvals = [ LossVal(v.val,v.weight*w,self.name+v.name) for v in lossvals ]
+        return lossvals
+
 
 @dataclasses.dataclass
 class History:
@@ -33,11 +97,6 @@ class History:
     current_train_buffer : List[Any] = dataclasses.field(default_factory=list)
     logplot : bool = True
 
-
-class LossVal(NamedTuple):
-    val : Tensor
-    weight : float
-    name : str
 
 
 # From https://stackoverflow.com/questions/15411967/how-can-i-check-if-code-is-executed-in-the-ipython-notebook
@@ -154,9 +213,14 @@ class TrainHistoryPlotter(object):
             return
         epochs, values = zip(*h.current_train_buffer)
         try:
+            if next(iter(values)).shape != ():
+                values = np.concatenate(values)
+            else:
+                values = np.stack(values)
             h.train.append((np.average(epochs), np.average(values), np.std(values)))
         except FloatingPointError:
-            print (f"Floating point error at {k} in epochs {np.average(epochs)} with values:\n {str(values)}\n")
+            with np.printoptions(precision=4, suppress=True, threshold=20000):
+                print (f"Floating point error at {k} in epochs {np.average(epochs)} with values:\n {str(values)} of which there are {len(values)}\n")
             h.train.append((np.average(epochs), np.nan, np.nan))
         h.current_train_buffer = []
 
@@ -281,10 +345,9 @@ def run_the_training(
             net.train()
 
             for batch in train_iter:
-                lossvals = update_func(net, batch, optimizer, state)
-                state.lossvals = lossvals
-                for name, val in lossvals:
-                    plotter.add_train_point(epoch, state.step, name, val.detach().to('cpu',non_blocking=True))
+                trainlossvals = update_func(net, batch, optimizer, state)
+                for name, (val, _) in concatenated_lossvals_by_name(itertools.chain.from_iterable(trainlossvals)).items():
+                    plotter.add_train_point(epoch, state.step, name, val)
                 state.step += 1
                 if state.grad_norm is not None:
                     plotter.add_train_point(epoch, state.step, '|grad L|', state.grad_norm)
@@ -333,7 +396,75 @@ class SaveCallback(object):
 
     def save(self):
         os.makedirs(self.model_dir, exist_ok=True)
-        torch.save(self.net.state_dict(), self.filename)
+        trackertraincode.neuralnets.io.save_model(self.net, self.filename)
+
+
+class DebugData(NamedTuple):
+    parameters : dict[str,Tensor]
+    batches : list[Batch]
+    preds : dict[str,Tensor]
+    lossvals : list[list[LossVal]]
+
+    def is_bad(self):
+        '''Checks data for badness.
+        
+        Currently NANs and input value range.
+        
+        Return:
+            True if so.
+        '''
+        #TODO: decouple for name of input tensor
+        for k,v in self.parameters.items():
+            if torch.any(torch.isnan(v)):
+                print(f"{k} is NAN")
+                return True
+        for b in self.batches:
+            for k, v in b.items():
+                if torch.any(torch.isnan(v)):
+                    print(f"{k} is NAN")
+                    return True
+            inputs = b['image']
+            if  torch.amin(inputs)<-2. or torch.amax(inputs)>2.:
+                print(f"Input image {inputs.shape} exceeds value limits with {torch.amin(inputs)} to {torch.amax(inputs)}")
+                return True
+        for k,v in self.preds.items():
+            if torch.any(torch.isnan(v)):
+                print(f"{k} is NAN")
+                return True
+        for lv_list in self.lossvals:
+            for lv in lv_list:
+                if torch.any(torch.isnan(lv.val)):
+                    print(f"{lv.name} is NAN")
+                    return True
+        return False
+
+class DebugCallback():
+    '''For dumping a history of stuff when problems are detected.'''
+    def __init__(self):
+        self.history_length = 3
+        self.debug_data : List[DebugData] = []
+        self.filename = '/tmp/notgood.pkl'
+    
+    def observe(self, net_pre_update : nn.Module, batches : list[Batch], preds : dict[str,Tensor], lossvals : list[list[LossVal]]):
+        '''Record and check.
+        Args:
+            batches: Actually sub-batches
+            lossvals: One list of loss terms per sub-batch
+        '''
+        dd = DebugData(
+            {k:v.detach().to('cpu', non_blocking=True,copy=True) for k,v in net_pre_update.state_dict().items()},
+            [b.to('cpu', non_blocking=True,copy=True) for b in batches ],
+            {k:v.detach().to('cpu', non_blocking=True,copy=True) for k,v in preds.items()},
+            lossvals
+        )
+        if len(self.debug_data) >= self.history_length:
+            self.debug_data.pop(0)
+        self.debug_data.append(dd)
+        torch.cuda.current_stream().synchronize()
+        if dd.is_bad():
+            with open(self.filename, 'wb') as f:
+                pickle.dump(self.debug_data, f)
+            raise RuntimeError("Bad state detected")
 
 
 class SaveBestCallback(SaveCallback):
@@ -402,28 +533,6 @@ class SaveInIntervals(SaveCallback):
             self.save()
 
 
-def _check_loss(loss, pred, batch, name):
-    if not torch.isfinite(loss).all():
-        import pickle
-        with open('/tmp/pred.pkl', 'wb') as f:
-            pickle.dump(pred,f)
-        with open('/tmp/batch.pkl', 'wb') as f:
-            pickle.dump(batch, f)
-        raise RuntimeError(f"Non-finite value created by loss {name}")
-
-
-def checked_criterion_eval(lossfunc : Callable, pred : Dict, batch : Dict) -> List[LossVal]:
-    loss = lossfunc(pred, batch)
-    if isinstance(loss, Tensor):
-        # Only enable for debugging:
-        # _check_loss(loss, pred, batch, type(lossfunc).__name__)
-        return [LossVal(loss,1.,'')]
-    elif isinstance(loss, LossVal):
-        return [loss]
-    else:
-        return loss
-
-
 def compute_inf_norm_of_grad(net : nn.Module):
     device = next(iter(net.parameters())).device
     result = torch.zeros((), device=device, dtype=torch.float32, requires_grad=False)
@@ -434,107 +543,70 @@ def compute_inf_norm_of_grad(net : nn.Module):
     return result
 
 
-def _convert_multi_task_loss_list(multi_task_terms: Dict[str,List[Tuple[Tensor,float,int]]], device : str) -> Dict[str,Tuple[Tensor,Tensor,Tensor]]:
-    # Convert list of list of tuples to list of tuples of tensors
-    def _cvt_item(k, vals_weights_idx):
-        vals, weights, idxs = zip(*vals_weights_idx)
-        #print (f"CVT {k}: v {[v.shape for v in vals]}, w {[w.shape for w in weights]}")
-        vals = [ (val*w).mean() for val, w in zip(vals, weights) ]
-        vals = torch.stack(vals)
-        #weights = torch.as_tensor(weights, dtype=torch.float32).to(device, non_blocking=True)
-        #weights = torch.stack(weights)
-        weights = torch.stack([w.mean() for w in weights])
-        idxs = torch.as_tensor(idxs)
-        return vals, weights, idxs
-    return { k:_cvt_item(k,v) for k,v in multi_task_terms.items() }
+# g_debug = DebugCallback()
 
 
-def _accumulate_losses_over_batches(multi_task_terms: Sequence[Tuple[Tensor,Tensor,Tensor]], batchsizes : Tensor):
-    all_lossvals = 0.
-    for vals, weights, idxs in multi_task_terms:
-        all_lossvals = all_lossvals + torch.sum(vals*batchsizes[idxs])
-    all_lossvals = all_lossvals / torch.sum(batchsizes)
-    return all_lossvals
+def default_update_fun(net, batch : List[Batch], optimizer : torch.optim.Optimizer, state : State, loss : dict[Any, Criterion | CriterionGroup] | Criterion | CriterionGroup):
+    # global g_debug
 
-
-def default_update_fun(net, batch : List[Batch], optimizer : torch.optim.Optimizer, state : State, loss):
-    assert isinstance(batch, list)
-    
     optimizer.zero_grad()
 
     inputs = torch.concat([b['image'] for b in batch], dim=0)
-    
-    assert torch.amin(inputs)>=-2., f"Input out of normal image bounds: {torch.amin(inputs)}"
-    assert torch.amax(inputs)<= 2., f"Input out of normal image bounds: {torch.amax(inputs)}"
 
     preds = net(inputs)
 
-    all_multi_task_terms = defaultdict(list)
-    batchsizes = torch.tensor([ subset.meta.batchsize for subset in batch ], dtype=torch.float32).to(inputs.device, non_blocking=True)
+    lossvals_by_name = defaultdict(list)
+    all_lossvals : list[list[LossVal]] = []
 
+    # Iterate over different datasets / loss configurations
     offset = 0
-    for subset_idx, subset in enumerate(batch):
+    for subset in batch:
         frames_in_subset, = subset.meta.prefixshape
         subpreds = { k:v[offset:offset+frames_in_subset,...] for k,v in preds.items() }
 
-        loss_func_of_subset = loss[subset.meta.tag] if isinstance(loss, dict) else loss
-        multi_task_terms =  checked_criterion_eval(loss_func_of_subset, subpreds, subset)
+        # Get loss function and evaluate
+        loss_func_of_subset : Union[Criterion,CriterionGroup] = loss[subset.meta.tag] if isinstance(loss, dict) else loss
+        multi_task_terms : List[LossVal] =  loss_func_of_subset.evaluate(subpreds, subset, state.epoch)
 
+        # Support loss weighting by datasets
         if 'dataset_weight' in subset:
-            dataset_weights = subset['dataset_weight']
-            assert dataset_weights.size(0) == subset.meta.batchsize
+            dataset_weight = subset['dataset_weight']
+            assert dataset_weight.size(0) == subset.meta.batchsize
+            multi_task_terms = [ v._replace(weight=v.weight*dataset_weight) for v in multi_task_terms ]
         else:
-            dataset_weights = torch.ones((frames_in_subset,), device=inputs.device)
+            # Else, make the weight member a tensor the same shape as the loss values
+            multi_task_terms = [ v._replace(weight=v.val.new_full(size=v.val.shape,fill_value=v.weight)) for v in multi_task_terms ]
 
-        for elem in multi_task_terms:
-            weight = dataset_weights * elem.weight
-            assert weight.shape == elem.val.shape, f"Bad loss {elem.name}"
-            all_multi_task_terms[elem.name].append((elem.val, weight))
-            if state.num_samples_per_loss is not None:
-                state.num_samples_per_loss[elem.name] += frames_in_subset
-        
+        all_lossvals.append(multi_task_terms)
         del multi_task_terms, loss_func_of_subset
 
         offset += frames_in_subset
 
-    def _concat_over_subsets(items : List[Tuple[Tensor,Tensor]]):
-        values, weights = zip(*items)
-        return (
-            torch.concat(values),
-            torch.concat(weights))
-    all_multi_task_terms = { k:_concat_over_subsets(v) for k,v in all_multi_task_terms.items() }
+    batchsize = sum(subset.meta.batchsize for subset in batch)
+    # Concatenate the loss values over the sub-batches. 
+    lossvals_by_name = concatenated_lossvals_by_name(itertools.chain.from_iterable(all_lossvals))
+    # Compute weighted average, dividing by the batch size which is equivalent to substituting missing losses by 0.
+    loss_sum = torch.concat([ (values*weights) for values,weights in lossvals_by_name.values() ]).sum() / batchsize
 
-    loss_sum = torch.concat([ (values*weights) for values,weights in all_multi_task_terms.values() ]).sum() / batchsizes.sum()
+    # Transfer to CPU
+    for loss_list in all_lossvals:
+        for i, v in enumerate(loss_list):
+            loss_list[i] = v._replace(val = v.val.detach().to('cpu', non_blocking=True))
+
     loss_sum.backward()
-    
+
+    # g_debug.observe(net, batch, preds, all_lossvals)
+
     if 1:
         state.grad_norm = compute_inf_norm_of_grad(net).to('cpu', non_blocking=True)
         # Gradients get very large more often than looks healthy ... Loss spikes a lot.
         # Gradient magnitudes below 0.1 seem to be normal. Initially gradients are larger,
-        nn.utils.clip_grad_norm_(net.parameters(), 0.1, norm_type=float('inf'))
+        nn.utils.clip_grad_norm_(net.parameters(), 1.0, norm_type=float('inf'))
 
     optimizer.step()
 
-    # This is only for logging
-    for k, (vals, weights) in all_multi_task_terms.items():
-        all_multi_task_terms[k] = weighted_mean(vals, weights, 0)
-        
-    return list(all_multi_task_terms.items())
-
-
-class MultiTaskLoss(object):
-    def __init__(self, criterions : Sequence[Criterion]):
-        self.criterions = criterions
-
-    def __iadd__(self, crit : Criterion):
-        self.criterions += crit
-        return self
-
-    def __call__(self, pred, batch):
-        def _eval_crit(crit : Criterion):
-            return [ 
-                LossVal(lv.val, lv.weight*crit.w, crit.name+lv.name) for lv in checked_criterion_eval(crit.f, pred, batch) ]
-        return sum((_eval_crit(c) for c in self.criterions), start=[])
+    torch.cuda.current_stream().synchronize()
+    return all_lossvals
 
 
 class DefaultTestFunc(object):
@@ -593,6 +665,25 @@ def LinearUpThenSteps(optimizer, num_up, gamma, steps):
     def lr_func(i):
         if i < num_up:
             return ((i+1)/num_up)
+        else:
+            step_index = [j for j,step in enumerate(steps) if i>step][-1]
+            return gamma**step_index
+    return LambdaLR(optimizer, lr_func)
+
+
+def ExponentialUpThenSteps(optimizer, num_up, gamma, steps):
+    steps = [0] + steps
+    def lr_func(i):
+        eps = 1.e-2
+        scale = math.log(eps)
+        if i < num_up:
+            f = ((i+1)/num_up)
+            #return torch.sigmoid((f - 0.5) * 15.)
+            # a * exp(f / l) | f=1 == 1.
+            # a * exp(f / l) | f=0 ~= eps
+            # => a = eps
+            # => ln(1./eps) = 1./l
+            return eps * math.exp(-scale*f)
         else:
             step_index = [j for j,step in enumerate(steps) if i>step][-1]
             return gamma**step_index

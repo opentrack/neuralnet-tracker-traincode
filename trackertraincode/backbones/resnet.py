@@ -52,7 +52,6 @@ class ResNetBackbone(nn.Module):
         super().__init__()
         
         use_blurpool = kwargs.pop('use_blurpool')
-        print ("ResNet blurpool = ", use_blurpool)
 
         kwargs['block']=CustomBlock if use_blurpool else torchvision.models.resnet.BasicBlock
 

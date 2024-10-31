@@ -6,4 +6,5 @@ python scripts/train_poseestimator.py --lr 1.e-3 --epochs 1500 --ds "repro_300_w
     --with-nll-loss \
     --roi-override original \
     --no-blurpool \
-    --backbone mobilenetv1
+    --backbone resnet18 \
+    --outdir model_files/

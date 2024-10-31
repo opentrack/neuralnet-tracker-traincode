@@ -6,17 +6,17 @@
 import torch.multiprocessing
 torch.multiprocessing.set_sharing_strategy('file_system')
 
-from typing import Any, List, NamedTuple, Tuple, Dict
+from typing import Any, List, NamedTuple, Tuple, Dict, Callable, Literal
 import numpy as np
 import argparse
 import tqdm
 import tabulate
 import json
 import os
+import copy
 import pprint
 from numpy.typing import NDArray
 from matplotlib import pyplot
-from os.path import basename
 import functools
 import torch
 from torch import Tensor
@@ -25,14 +25,18 @@ from os.path import commonprefix, relpath
 
 from trackertraincode.datasets.batch import Batch, Metadata
 import trackertraincode.datatransformation as dtr
-import trackertraincode.eval
 import trackertraincode.pipelines
 import trackertraincode.vis as vis
 import trackertraincode.utils as utils
 
-from trackertraincode.eval import load_pose_network, predict
+from trackertraincode.eval import load_pose_network, predict, compute_opal_paper_alignment, PerspectiveCorrector
 
 load_pose_network = functools.lru_cache(maxsize=1)(load_pose_network)
+
+# According to this https://gmv.cast.uark.edu/scanning/hardware/microsoft-kinect-resourceshardware/
+# The horizontal field of view of the kinect is ..
+BIWI_HORIZONTAL_FOV = 57.
+
 
 class RoiConfig(NamedTuple):
     expansion_factor : float = 1.1
@@ -43,7 +47,6 @@ class RoiConfig(NamedTuple):
         crop = ['ROI','CC'][self.center_crop]
         return f'{"(H_roi)" if self.use_head_roi else "(F_roi)"}{crop}{self.expansion_factor:0.1f}'
 
-normal_roi_configs = [ RoiConfig() ]
 comprehensive_roi_configs = [ RoiConfig(*x) for x in [
     (1.2, False),
     (1.1, False),
@@ -61,7 +64,17 @@ def determine_roi(sample : Batch, use_center_crop : bool):
     return torch.tensor([0,0,h,w], dtype=torch.float32)
 
 
-def compute_predictions_and_targets(loader, net, keys, roi_config : RoiConfig):
+EvalResults = Dict[str, Tensor]
+BatchPerspectiveCorrector = Callable[[Tensor,EvalResults],EvalResults]
+
+AlignmentScheme = Literal['perspective','opal23_headpose','none']
+
+
+def compute_predictions_and_targets(loader, net, keys, roi_config : RoiConfig) -> Tuple[EvalResults, EvalResults]:
+    """
+    Return:
+        Prediction and GT, each in a dict.
+    """
     preds   = defaultdict(list)
     targets = defaultdict(list)
     first = True
@@ -86,7 +99,50 @@ def compute_predictions_and_targets(loader, net, keys, roi_config : RoiConfig):
     return preds, targets
 
 
-def iterate_predictions(loader, preds : Batch):
+def compute_predictions_and_targets_biwi(loader, net, keys, roi_config : RoiConfig, alignment : AlignmentScheme) -> Tuple[EvalResults, EvalResults]:
+    """
+    Return:
+        Prediction and GT, each in a dict.
+    """
+    preds   = defaultdict(list)
+    targets = defaultdict(list)
+    other = defaultdict(list)
+    bar = tqdm.tqdm(total = len(loader.dataset))
+    first = True
+    for batch in utils.iter_batched(loader, 32):
+        images = [ sample['image'] for sample in batch ]
+        rois = torch.stack([ determine_roi(sample, roi_config.center_crop) for sample in batch ])
+        pred = predict(
+            net, 
+            images, 
+            rois=rois, 
+            focus_roi_expansion_factor=roi_config.expansion_factor)
+        if first:
+            keys = list(frozenset(pred.keys()).intersection(frozenset(keys)))
+            first = False
+        for k in keys:
+            preds[k].append(pred[k])
+            targets[k].append(torch.stack([sample[k] for sample in batch]))
+        other['image_sizes'].extend([ img.shape[:2][::-1] for img in images ])
+        other['individual'].extend([ sample['individual'] for sample in batch ])
+        bar.update(len(batch))
+    preds = { k:torch.cat(v) for k,v in preds.items() }
+    targets = { k:torch.cat(v) for k,v in targets.items() }
+    other = { k:np.asarray(v) for k,v in other.items() }
+    if alignment == 'perspective':
+        corrector = PerspectiveCorrector(BIWI_HORIZONTAL_FOV)
+        assert 'pt3d_68' not in targets, "Unsupported. Must be computed after correction."
+        preds['pose'] = corrector.corrected_rotation(torch.from_numpy(other['image_sizes']), preds['coord'], preds['pose'])
+    elif alignment == 'opal23_headpose':
+        assert 'pt3d_68' not in targets, "Unsupported. Must be computed after correction."
+        preds['pose'] = compute_opal_paper_alignment(preds['pose'],targets['pose'], other['individual'])      
+    return preds, targets
+
+
+def zip_gt_with_pred(loader, preds : Batch):
+    '''
+    Returns iterator over tuples of the Batch type.
+    '''
     pred_iter = (dtr.to_numpy(s) for s in preds.iter_frames())
     sample_iter = (dtr.to_numpy(sample) for batch in loader for sample in dtr.undo_collate(batch))
     yield from zip(sample_iter, pred_iter)
@@ -127,15 +183,11 @@ class TableBuilder:
         self._header = [ 'Data', 'Pitch°', 'Yaw°', 'Roll°', 'Mean°', 'Geodesic°', 'XY%', 'S%', 'NME3d%', 'NME2d%_30', 'NME2d%_60', 'NME2d%_90', 'NME2d%_avg' ]
         self._entries_by_model = defaultdict(list)
     
-    def add_row(self, model : str, data : str, euler_angles : List[float], geodesic : float, rmse_pos : float, rmse_size : float, uw_nme_3d, nme_2d, data_aux_string = None):
-        # maxlen = 30
-        # if len(model) > maxlen+3:
-        #     model = '...'+model[-maxlen:]
-
-        uw_nme_3d = uw_nme_3d*100 if uw_nme_3d is not None else 'n/a'
-        nme_2d_30, nme_2d_60, nme_2d_90, nme_2d_avg = [(x*100 if nme_2d is not None else 'n/a') for x in nme_2d]
+    def add_row(self, model : str, data : str, euler_angles : List[float], geodesic : float, rmse_pos : float, rmse_size : float, unweighted_nme_3d, nme_2d, data_aux_string = None):
+        unweighted_nme_3d = unweighted_nme_3d*100 if unweighted_nme_3d is not None else 'n/a'
+        nme_2d_30, nme_2d_60, nme_2d_90, nme_2d_avg = ['/na' for _ in range(4)] if nme_2d is None else [x*100 for x in nme_2d]
         data = self.data_name_table.get(data, data) + (data_aux_string if data_aux_string is not None else '')
-        self._entries_by_model[model] += [[data] + euler_angles + [ np.average(euler_angles).tolist(), geodesic, rmse_pos, rmse_size, uw_nme_3d, nme_2d_30, nme_2d_60, nme_2d_90, nme_2d_avg]]
+        self._entries_by_model[model] += [[data] + euler_angles + [ np.average(euler_angles).tolist(), geodesic, rmse_pos, rmse_size, unweighted_nme_3d, nme_2d_30, nme_2d_60, nme_2d_90, nme_2d_avg]]
     
     def build(self) -> str:
         prefix = commonprefix(list(self._entries_by_model.keys()))
@@ -165,7 +217,11 @@ class TableBuilder:
 def report(net_filename, data_name, roi_config : RoiConfig, args : argparse.Namespace, builder : TableBuilder):
     loader = trackertraincode.pipelines.make_validation_loader(data_name, use_head_roi=roi_config.use_head_roi)
     net = load_pose_network(net_filename, args.device)
-    preds, targets = compute_predictions_and_targets(loader, net, ['coord','pose', 'roi', 'pt3d_68'], roi_config)
+    if data_name == 'biwi':
+        preds, targets = compute_predictions_and_targets_biwi(loader, net, ['coord','pose', 'roi'], roi_config, args.alignment_scheme)
+
+    else:
+        preds, targets = compute_predictions_and_targets(loader, net, ['coord','pose', 'roi', 'pt3d_68'], roi_config)
     # Position and size errors are measured relative to the ROI size. Hence in percent.
     poseerrs = trackertraincode.eval.PoseErr()(preds, targets)
     eulererrs = trackertraincode.eval.EulerAngleErrors()(preds, targets)
@@ -185,7 +241,7 @@ def report(net_filename, data_name, roi_config : RoiConfig, args : argparse.Name
         rmse_pos=(rmse_pos*100.).tolist(),
         rmse_size=(rmse_size*100.).tolist(),
         data_aux_string=' / ' + str(roi_config),
-        uw_nme_3d=np.average(uw_nme_3d) if uw_nme_3d is not None else None,
+        unweighted_nme_3d=np.average(uw_nme_3d) if uw_nme_3d is not None else None,
         nme_2d=nme_2d
     )
 
@@ -202,7 +258,7 @@ def report(net_filename, data_name, roi_config : RoiConfig, args : argparse.Name
         order = np.ascontiguousarray(np.argsort(quantity)[::-1])
         loader = trackertraincode.pipelines.make_validation_loader(data_name, order=order)
         new_preds = Batch(Metadata(0, batchsize=len(order)), **{k:v[order] for k,v in preds.items()})
-        worst_rot_iter = iterate_predictions(loader, new_preds)
+        worst_rot_iter = zip_gt_with_pred(loader, new_preds)
         history = DrawPredictionsWithHistory(data_name + '/' + net_filename)
         fig, btn = vis.matplotlib_plot_iterable(worst_rot_iter, history)
         fig.suptitle(data_name + ' / ' + str(roi_config) + ' / ' + net_filename)
@@ -214,7 +270,17 @@ def report(net_filename, data_name, roi_config : RoiConfig, args : argparse.Name
 def run(args):
     gui = []
     table_builder = TableBuilder()
-    roi_configs = comprehensive_roi_configs if args.comprehensive_roi else normal_roi_configs
+
+    if not args.comprehensive_roi:
+        if args.roi_expansion is not None:
+            roi_configs = [ RoiConfig(expansion_factor=args.roi_expansion) ]
+        else:
+            roi_configs = [ RoiConfig() ]
+    else:
+        assert args.roi_expansion is None, "Conflicting arguments"
+        roi_configs = comprehensive_roi_configs
+
+        
     datasets = args.ds.split('+')
     for net_filename in args.filenames:
         for name in datasets:
@@ -240,6 +306,8 @@ if __name__ == '__main__':
     parser.add_argument('--vis', dest='vis', help='visualization of worst', default='none', choices=['none','kpts','rot','size'])
     parser.add_argument('--device', help='select device: cpu or cuda', default='cuda', type=str)
     parser.add_argument('--comprehensive-roi', action='store_true', default=False)
+    parser.add_argument('--alignment-scheme', choices=['perspective','opal23_headpose','none'], default='none')
+    parser.add_argument('--roi-expansion', default=None, type=float)
     parser.add_argument('--json', type=str, default=None)
     parser.add_argument('--ds', type=str, default='aflw2k3d')
     args = parser.parse_args()

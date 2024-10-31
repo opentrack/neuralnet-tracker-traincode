@@ -19,7 +19,22 @@ ik : Final[int] = 2
 iijk  : Final[slice] = slice(0,3)
 
 
-def mult(u, v):
+def _mat_repr(u : Tensor, indices=(iw,ii,ij,ik,ii,iw,ik,ij,ij,ik,iw,ii,ik,ij,ii,iw)):
+    umat = u[...,indices]
+    umat = umat * umat.new_tensor([1.,-1.,-1.,-1.,1.,1.,-1.,1.,1.,1.,1.,-1.,1.,-1.,1.,1.])
+    umat = umat.view(*u.shape,4)
+    return umat
+
+
+def _vec_repr(v : Tensor):
+    return v[...,[iw,ii,ij,ik]].view(*v.shape,1)
+
+
+def _quat_repr(vec : Tensor):
+    return vec.view(*vec.shape[:-1])[...,[1,2,3,0]]
+
+
+def mult(u : Tensor, v : Tensor):
     """
     Multiplication of two quaternions.
 
@@ -27,12 +42,7 @@ def mult(u, v):
             are ordered as (i,j,k,w), i.e. real component last. 
             The other dimension have to match.
     """
-    out = torch.empty_like(u)
-    out[...,iw] = u[...,iw]*v[...,iw] - u[...,ii]*v[...,ii] - u[...,ij]*v[...,ij] - u[...,ik]*v[...,ik]
-    out[...,ii] = u[...,iw]*v[...,ii] + u[...,ii]*v[...,iw] + u[...,ij]*v[...,ik] - u[...,ik]*v[...,ij]
-    out[...,ij] = u[...,iw]*v[...,ij] - u[...,ii]*v[...,ik] + u[...,ij]*v[...,iw] + u[...,ik]*v[...,ii]
-    out[...,ik] = u[...,iw]*v[...,ik] + u[...,ii]*v[...,ij] - u[...,ij]*v[...,ii] + u[...,ik]*v[...,iw]
-    return out
+    return _quat_repr(torch.matmul(_mat_repr(u), _vec_repr(v)))
 
 
 def rotate(q, p):
@@ -43,28 +53,18 @@ def rotate(q, p):
             are ordered as (i,j,k,w), i.e. real component last.
             The other dimensions follow the default broadcasting rules.
     """
-    shape = torch.broadcast_shapes(p.shape[:-1], q.shape[:-1])
-    qi = q[...,ii]
-    qj = q[...,ij]
-    qk = q[...,ik]
-    qw = q[...,iw]
-    pi = p[...,ii]
-    pj = p[...,ij]
-    pk = p[...,ik]
 
-    tmp = q.new_empty(shape+(4,))
-    out = p.new_empty(shape+(3,))
-    
     # Compute tmp = q*p, identifying p with a purly imaginary quaternion.
-    tmp[...,iw] =                 - qi*pi - qj*pj - qk*pk
-    tmp[...,ii] = qw*pi                   + qj*pk - qk*pj
-    tmp[...,ij] = qw*pj - qi*pk                   + qk*pi
-    tmp[...,ik] = qw*pk + qi*pj - qj*pi
+    qmat = _mat_repr(q)
+    pvec = p[...,None]
+    tmp = torch.matmul(qmat[...,:,1:], pvec)
     # Compute tmp*q^-1.
-    out[...,ii] = -tmp[...,iw]*qi + tmp[...,ii]*qw - tmp[...,ij]*qk + tmp[...,ik]*qj
-    out[...,ij] = -tmp[...,iw]*qj + tmp[...,ii]*qk + tmp[...,ij]*qw - tmp[...,ik]*qi
-    out[...,ik] = -tmp[...,iw]*qk - tmp[...,ii]*qj + tmp[...,ij]*qi + tmp[...,ik]*qw
-    return out
+    tmpmat = _mat_repr(tmp.view(tmp.shape[:-1]),   (0,1,2,3,
+                                                    1,0,3,2,
+                                                    2,3,0,1,
+                                                    3,2,1,0))
+    out = torch.matmul(tmpmat[...,1:,:], _vec_repr(conjugate(q)))
+    return out.view(out.shape[:-1])
 
 
 def tomatrix(q):
@@ -89,6 +89,61 @@ def tomatrix(q):
     out[...,1,2] =      2.*(qj*qk - qi*qw)
     out[...,2,2] = 1. - 2.*(qi*qi + qj*qj)
     return out
+
+
+def from_matrix(m : Tensor):
+    # See https://en.wikipedia.org/wiki/Rotation_matrix#Quaternion
+    # Also inspired by
+    # https://pytorch3d.readthedocs.io/en/latest/_modules/pytorch3d/transforms/rotation_conversions.html#matrix_to_quaternion
+    shape = m.shape[:-2]
+    # Prefix with "batch" dimension. Flatten if multiple leading dimensions.
+    m = m = m[None,:] if shape == () else m.flatten(0,-3)
+
+    # 4 possibilties to compute the quaternion. Unstable computation with divisions
+    # by zero or close to zero can occur. Further down, the best conditioned solution
+    # is picked.
+    qk_from_k = 0.5*torch.sqrt(m[:,2,2] - m[:,1,1] - m[:,0,0] + 1.0)
+    qj_from_j = 0.5*torch.sqrt(m[:,1,1] - m[:,2,2] - m[:,0,0] + 1.0)
+    qi_from_i = 0.5*torch.sqrt(m[:,0,0] - m[:,1,1] - m[:,2,2] + 1.0)
+    qw_from_w = 0.5*torch.sqrt(m[:,0,0] + m[:,1,1] + m[:,2,2] + 1.0) # Using that qj*qj + qk*qk + qi*qi = qw*qw - 1
+
+    qw_from_k = 0.25 * (m[:,1,0] - m[:,0,1]) / qk_from_k
+    qi_from_k = 0.25 * (m[:,2,0] + m[:,0,2]) / qk_from_k
+    qj_from_k = 0.25 * (m[:,1,2] + m[:,2,1]) / qk_from_k
+
+    qw_from_j = 0.25 * (m[:,0,2] - m[:,2,0]) / qj_from_j
+    qi_from_j = 0.25 * (m[:,1,0] + m[:,0,1]) / qj_from_j
+    qk_from_j = 0.25 * (m[:,1,2] + m[:,2,1]) / qj_from_j
+
+    qw_from_i = 0.25 * (m[:,2,1] - m[:,1,2]) / qi_from_i
+    qj_from_i = 0.25 * (m[:,1,0] + m[:,0,1]) / qi_from_i
+    qk_from_i = 0.25 * (m[:,0,2] + m[:,2,0]) / qi_from_i
+
+    qi_from_w = 0.25 * (m[:,2,1] - m[:,1,2]) / qw_from_w
+    qj_from_w = 0.25 * (m[:,0,2] - m[:,2,0]) / qw_from_w
+    qk_from_w = 0.25 * (m[:,1,0] - m[:,0,1]) / qw_from_w
+
+    quat_candidates = torch.stack([
+        torch.stack([qi_from_i, qj_from_i, qk_from_i, qw_from_i], dim=-1),
+        torch.stack([qi_from_j, qj_from_j, qk_from_j, qw_from_j], dim=-1),
+        torch.stack([qi_from_k, qj_from_k, qk_from_k, qw_from_k], dim=-1),
+        torch.stack([qi_from_w, qj_from_w, qk_from_w, qw_from_w], dim=-1),
+    ], dim=1)
+    
+    quat_pick = torch.argmax(torch.nan_to_num(torch.stack([
+        qi_from_i,qj_from_j,qk_from_k,qw_from_w
+    ],dim=-1),-1000.),dim=-1)
+
+    mask = torch.nn.functional.one_hot(quat_pick,4)==1
+    quat = quat_candidates[mask]
+    quat = positivereal(quat)
+    quat = quat.view(*shape,4)
+    return quat
+
+
+def conjugate(q : Tensor):
+    assert iw == 3
+    return q * q.new_tensor([-1.,-1.,-1.,1.])
 
 
 def from_rotvec(r, eps=1.e-12):

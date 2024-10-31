@@ -9,7 +9,7 @@ def test_affine3d():
     t1 = np.random.rand(3)
     inv = utils.affine3d_inv((R1,t1))
     R2, t2 = utils.affine3d_chain((R1,t1), inv)
-    np.testing.assert_allclose(R2.as_matrix(), np.eye(3))
+    np.testing.assert_allclose(R2.as_matrix(), np.eye(3), atol = 1.e-15)
     np.testing.assert_allclose(t2, 0., atol = 1.e-9)
 
 

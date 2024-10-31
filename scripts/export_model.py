@@ -4,6 +4,13 @@ import numpy as np
 import os
 import torch
 import copy
+import tqdm
+import itertools
+
+from torch.ao.quantization import get_default_qconfig_mapping, QConfig, QConfigMapping
+from torch.ao.quantization.quantize_fx import convert_fx, prepare_fx
+from torch.ao.quantization import fake_quantize
+from torch.ao.quantization import observer
 
 import torch.onnx
 import torch.nn as nn
@@ -14,7 +21,9 @@ except ImportError:
     ort = None
     print ("Warning cannot import ONNX runtime: Runtime checks disabled")
 
+from trackertraincode.neuralnets.bnfusion import fuse_convbn
 import trackertraincode.neuralnets.models
+import trackertraincode.pipelines
 
 # Only single thread for inference time measurement
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -26,7 +35,7 @@ def clear_denormals(state_dict, threshold=1.e-20):
     # decrease compared to pretrained weights from torchvision.
     # The real denormals start below 2.*10^-38
     # Denormals make computations on CPU very slow .. at least back then ...
-    state_dict = copy.deepcopy(state_dict)
+    state_dict = { k:v.detach().clone() for k,v in state_dict.items() }
     print ("Denormals or zeros:")
     for k, v in state_dict.items():
         if v.dtype == torch.float32:
@@ -36,6 +45,64 @@ def clear_denormals(state_dict, threshold=1.e-20):
                 print (f"{k:40s}: {n:10d} ({n/np.product(v.shape)*100}%)")
             v *= mask.to(torch.float32)
     return state_dict
+
+
+
+def quantize_backbone(original : trackertraincode.neuralnets.models.NetworkWithPointHead):
+    original = copy.deepcopy(original)
+
+    dsid = trackertraincode.pipelines.Id
+    train_loader, _, _ = trackertraincode.pipelines.make_pose_estimation_loaders(
+        inputsize = original.input_resolution, 
+        batchsize = 128,
+        datasets = [dsid.REPO_300WLP,dsid.SYNFACE,dsid],
+        dataset_weights = {},
+        use_weights_as_sampling_frequency=True,
+        enable_image_aug=True,
+        rotation_aug_angle=30.,
+        roi_override='original',
+        device=None)
+    example_input = (next(iter(train_loader))[0]['image'],)
+    original.eval()
+
+    # Configuration chosen as per advice from 
+    # https://oscar-savolainen.medium.com/how-to-quantize-a-neural-network-model-in-pytorch-an-in-depth-explanation-d4a2cdf632a4
+    config = QConfig(activation=fake_quantize.FusedMovingAvgObsFakeQuantize.with_args(observer=observer.MovingAverageMinMaxObserver,
+                                                                                    quant_min=0,
+                                                                                    quant_max=255,
+                                                                                    dtype=torch.quint8,
+                                                                                    qscheme=torch.per_tensor_affine),
+                                weight=fake_quantize.FakeQuantize.with_args(observer=fake_quantize.MovingAveragePerChannelMinMaxObserver,
+                                                                                  quant_min=-128,
+                                                                                  quant_max=127,
+                                                                                  dtype=torch.qint8,
+                                                                                  qscheme=torch.per_channel_symmetric))
+    #qconfig_mapping = get_default_qconfig_mapping("x86")
+    #qconfig_mapping = get_default_qconfig_mapping("fbgemm")
+    #qconfig_mapping = get_default_qconfig_mapping("qnnpack")
+    qconfig_mapping = QConfigMapping()
+    qconfig_mapping.set_global(config)
+    # Disable quantization after the convolutional layers.
+    # The final relu+global pooling seems to be fast enough to do in float32 without
+    # significant slowdown.
+    qconfig_mapping = qconfig_mapping.set_object_type(nn.AdaptiveAvgPool2d, None)
+    if original.config == 'resnet18':
+        # TODO: better SW design?
+        # Disables quantization of the input of the AveragePooling
+        qconfig_mapping = qconfig_mapping.set_module_name('layers.7.1.relu', None)
+
+    convnet = prepare_fx(
+        fuse_convbn(torch.fx.symbolic_trace(original.convnet)), 
+        qconfig_mapping, 
+        example_input)
+
+    for _, batches in tqdm.tqdm(zip(range(20), train_loader)):
+        for batch in batches:
+            convnet(batch['image'])
+
+    original.convnet = convert_fx(convnet)
+
+    return original
 
 
 class ModelForOpenTrack(nn.Module):
@@ -94,19 +161,6 @@ class ExportModel(nn.Module):
         return tuple(y[k] for k in self.output_names)
 
 
-def load_posemodel(args):
-    sd = torch.load(args.posemodelfilename)
-    net = trackertraincode.neuralnets.models.NetworkWithPointHead(
-        enable_point_head=True,
-        enable_face_detector=False,
-        config='mobilenetv1',
-        enable_uncertainty=True,
-        backbone_args = {'use_blurpool' : False}
-    )
-    net.load_state_dict(sd, strict=True)
-    return net
-
-
 def load_facelocalizer(args):
     sd = torch.load(args.localizermodelfilename)
     net = trackertraincode.neuralnets.models.LocalizerNet()
@@ -137,8 +191,10 @@ def compare_network_outputs(torchmodel, ort_session, inputs):
 
 
 @torch.no_grad()
-def convert_posemodel_onnx(net : nn.Module, filename, for_opentrack=True):
+def convert_posemodel_onnx(net : nn.Module, filename, for_opentrack=True, quantize=False):
     net.load_state_dict(clear_denormals(net.state_dict()))
+    if quantize:
+        net = quantize_backbone(net)
     if for_opentrack:
         net = ModelForOpenTrack(net)
     else:
@@ -153,7 +209,7 @@ def convert_posemodel_onnx(net : nn.Module, filename, for_opentrack=True):
 
     B, C, H, W = inputs[0].shape
 
-    destination = splitext(filename)[0]+('.onnx' if for_opentrack else '_complete.onnx')
+    destination = splitext(filename)[0]+('_ptq' if quantize else '')+('.onnx' if for_opentrack else '_complete.onnx')
 
     print (f"Exporting {net.__class__}, input size = {H},{W} to {destination}")
 
@@ -173,6 +229,13 @@ def convert_posemodel_onnx(net : nn.Module, filename, for_opentrack=True):
         output_names = net.output_names,
         dynamic_axes = dynamic_axes,
         verbose=False)
+
+    # torch.onnx.dynamo_export(
+    #     net,  # model being run
+    #     inputs,  # model input (or a tuple for multiple inputs)
+    #     export_options=torch.onnx.ExportOptions(
+    #         dynamic_shapes=False,
+    #     )).save(destination)
 
     onnxmodel = onnx.load(destination)
     onnxmodel.doc_string = 'Head pose prediction'
@@ -233,10 +296,11 @@ if __name__ == '__main__':
     parser.add_argument('--posenet', dest = 'posemodelfilename', help="filename of model checkpoint", type=str, default=None)
     parser.add_argument('--full', action='store_true', default=False)
     parser.add_argument('--localizer', dest = 'localizermodelfilename', help="filename of model checkpoint", type=str, default=None)
+    parser.add_argument('--quantize', action='store_true', default=False)
     args = parser.parse_args()
     if args.posemodelfilename:
-        net = load_posemodel(args) 
-        convert_posemodel_onnx(net, args.posemodelfilename, for_opentrack=not args.full)
+        net = trackertraincode.neuralnets.models.load_model(args.posemodelfilename) 
+        convert_posemodel_onnx(net, args.posemodelfilename, for_opentrack=not args.full, quantize=args.quantize)
     if args.localizermodelfilename:
        convert_localizer(args)
     if not args.posemodelfilename and not args.localizermodelfilename:

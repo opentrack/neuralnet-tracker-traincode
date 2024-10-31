@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from os.path import join, dirname
-from typing import Union, Optional
+from typing import Tuple, Union, Optional
 import numpy as np
 import torch
 import torch.nn as nn
@@ -67,10 +67,6 @@ class DeformableHeadKeypoints(nn.Module):
         keyeigvecs = torch.from_numpy(full.scaled_bases[:,full.keypoints,:]).contiguous()
         self.register_buffer('keypts', keypts)
         self.register_buffer('keyeigvecs', keyeigvecs)
-        self.eye_left_top = torch.tensor([ 37, 38 ], dtype=torch.long)
-        self.eye_left_bottom = torch.tensor([ 41, 40 ], dtype=torch.long)
-        self.eye_right_top = torch.tensor([ 43, 44 ], dtype=torch.long)
-        self.eye_right_bottom = torch.tensor([ 47, 46 ], dtype=torch.long)
 
     def _deformvector(self, shapeparams):
         # (..., num_eigvecs, 68, 3) x (... , B, num_eigvecs). -> Need for broadcasting and unsqueezing.
@@ -154,10 +150,7 @@ class LocalToGlobalCoordinateOffset(nn.Module):
         return torch.cat([torch.sin(c), c.new_zeros((2,)), torch.cos(c) ])
 
     def _compute_correction_offset(self):
-        q = self.p.new_empty((3,))
-        q[0] = 0.
-        q[1:] = self.p[1:3]
-        return q
+        return torch.cat([self.p.new_zeros((1,)), self.p[1:3]])
 
     def _compute_correction_scale(self):
         return smoothclip0(self.p[3])
@@ -220,6 +213,21 @@ def freeze_norm_stats(m):
             p.requires_grad = False
 
 
+def quaternion_from_features(z : Tensor):
+    '''
+    Returns:
+        (quaternions, unnormalized quaternions)
+    '''
+    assert torchquaternion.iw == 3
+    # The real component can be positive because -q is the same rotation as q.
+    # Seems easier to learn like so.
+    quats_unnormalized = torch.cat([
+        z[...,torchquaternion.iijk],
+        smoothclip0(z[...,torchquaternion.iw:])], dim=-1)
+    quats = torchquaternion.normalized(quats_unnormalized)
+    return quats, quats_unnormalized
+
+
 # TODO: proper test
 def _test_local_to_global_transform_offset():
     from scipy.spatial.transform import Rotation
@@ -239,19 +247,6 @@ def _test_local_to_global_transform_offset():
     print ((r.inv()*pred_r).magnitude())
     print (pred_c, expect_c, expect_scale)
 
-
-def quaternion_from_features(z : Tensor):
-    '''
-    Returns:
-        (quaternions, unnormalized quaternions)
-    '''
-    quats_unnormalized = torch.empty_like(z)
-    # The real component can be positive because -q is the same rotation as q.
-    # Seems easier to learn like so.
-    quats_unnormalized[...,torchquaternion.iw] = smoothclip0(z[...,torchquaternion.iw])
-    quats_unnormalized[...,torchquaternion.iijk] = z[...,torchquaternion.iijk]
-    quats = torchquaternion.normalized(quats_unnormalized)
-    return quats, quats_unnormalized
 
 
 if __name__ == '__main__':

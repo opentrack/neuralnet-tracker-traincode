@@ -43,12 +43,16 @@ def onnx_export_and_inference_speed(net):
     print (f"ONNX Inference time: {time/N*1000:.01f} ms averaged over {N} runs")
 
 
-def test_pose_network_sanity():
+def test_pose_network_sanity(tmp_path):
     torch.set_num_threads(1)
     net = trackertraincode.neuralnets.models.NetworkWithPointHead(config='mobilenetv1', enable_uncertainty=True)
     net.eval()
     
     timing_and_output(net, torch.rand(1, 1, net.input_resolution, net.input_resolution))
+
+    filename = tmp_path / 'model.onnx'
+    trackertraincode.neuralnets.models.save_model(net, filename)
+    trackertraincode.neuralnets.models.load_model(filename)
 
     onnx_export_and_inference_speed(net)
 

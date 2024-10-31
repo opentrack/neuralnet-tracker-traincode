@@ -10,20 +10,22 @@ import trackertraincode.train as train
 from trackertraincode.datatransformation import PostprocessingDataLoader
 
 
-def update_fun(net, batch : Batch, optimizer : torch.optim.Optimizer, state : train.State, loss):
+def update_fun(net, batch : Batch, optimizer : torch.optim.Optimizer, state : train.State, loss : train.CriterionGroup):
     optimizer.zero_grad()
     y = net(batch['image'])
-    lossvals : List[train.LossVal] = loss(y, batch)
-    l = sum((l.val for l in lossvals), 0.)
+    lossvals : List[train.LossVal] = loss.evaluate(y, batch, state.step)
+    lossvals = [ v._replace(weight = v.val.new_full(v.val.shape, v.weight)) for v in lossvals ]
+    l = sum((l.val.sum() for l in lossvals), 0.)
     l.backward()
     optimizer.step()
-    return [ (l.name,l.val) for l in lossvals ]
+    lossvals = [ v._replace(val = v.val.detach().to('cpu', non_blocking=True)) for v in lossvals ]
+    return [lossvals]
 
 
 def test_run_the_training():
     class LossMock(object):
         def __call__(self, pred, batch):
-            return torch.nn.functional.mse_loss(pred, batch['y'])  
+            return torch.nn.functional.mse_loss(pred, batch['y'], reduction='none')  
     class MockDataset(Dataset):
         def __init__(self, n):
             self.n = n
@@ -38,6 +40,7 @@ def test_run_the_training():
         torch.nn.Linear(5,128),
         torch.nn.ReLU(),
         torch.nn.Linear(128,5))
+    net.get_config = lambda : {}
     trainloader = DataLoader(MockDataset(20), batch_size=2, collate_fn=Batch.collate)
     testloader = PostprocessingDataLoader(MockDataset(8), batch_size=2, collate_fn=Batch.collate, unroll_list_of_batches=True)
 
@@ -55,7 +58,7 @@ def test_run_the_training():
         net, 
         trainloader, 
         testloader,
-        functools.partial(update_fun,loss=train.MultiTaskLoss([ c1, c3 ])),
+        functools.partial(update_fun,loss=train.CriterionGroup([ c1, c3 ])),
         train.DefaultTestFunc([c1, c2]),
         callbacks = [cbsleep, train.SaveBestCallback(net, 'c2', model_dir='/tmp',retain_max=3)],
         close_plot_on_exit=True,

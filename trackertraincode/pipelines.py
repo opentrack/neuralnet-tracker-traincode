@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-from typing import List, Dict, Set, Sequence, Any, Type
+from typing import List, Dict, Set, Sequence, Any, Type, Optional
 from os.path import join, dirname
 import numpy as np
 import os
@@ -83,7 +83,7 @@ def whiten_batch(batch : Batch):
 
 
 def make_biwi_datasest(transform=None):
-    filename = join(os.environ['DATADIR'],'biwi.h5')
+    filename = join(os.environ['DATADIR'],'biwi-v3.h5')
     return Hdf5PoseDataset(filename, transform=transform, dataclass=Tag.ONLY_POSE)
 
 
@@ -254,7 +254,8 @@ def make_pose_estimation_loaders(
         use_weights_as_sampling_frequency : bool = True,
         enable_image_aug : bool = True,
         rotation_aug_angle : float = 30.,
-        roi_override : str = True
+        roi_override : str = True,
+        device : Optional[str] = 'cuda',
     ):
     C = transforms.Compose
 
@@ -367,10 +368,9 @@ def make_pose_estimation_loaders(
         dataset = ds_train,
         weights = train_sets_frequencies)
 
-    loader_trafo_test = [
-        partial(dtr.to_device, 'cuda'),
-        whiten_batch,
-    ]
+    loader_trafo_test = [ whiten_batch ]
+    if device is not None:
+        loader_trafo_test = [ lambda b: b.to('cuda') ] + loader_trafo_test
 
     if enable_image_aug:
         image_augs = [
@@ -389,7 +389,9 @@ def make_pose_estimation_loaders(
         ]
     else:
         image_augs = []
-    loader_trafo_train = [ partial(dtr.to_device, 'cuda') ] + image_augs + [ whiten_batch ]
+    loader_trafo_train = [ lambda b: b.to('cuda') ] if device is not None else []
+    loader_trafo_train += image_augs + [ whiten_batch ]
+    
 
     train_loader = dtr.PostprocessingDataLoader(ds_train,
                             unroll_list_of_batches = False,
@@ -412,7 +414,7 @@ def make_pose_estimation_loaders(
     return train_loader, test_loader, len(ds_train)
 
 
-def make_validation_loader(name, order = None, use_head_roi = True, num_workers=None):
+def make_validation_loader(name, order = None, use_head_roi = True, num_workers=None, batch_size = 32):
     test_trafo = transforms.Compose([
         dtr.offset_points_by_half_pixel, # For when pixels are considered grid cell centers
         dtr.PutRoiFromLandmarks(extend_to_forehead=use_head_roi)
@@ -445,7 +447,7 @@ def make_validation_loader(name, order = None, use_head_roi = True, num_workers=
 
     return dtr.PostprocessingDataLoader(
         ds, 
-        batch_size=32,
+        batch_size=batch_size,
         shuffle=False, 
         num_workers = num_workers,
         postprocess = None, 

@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import numpy as np
 import torch
 from matplotlib import pyplot
@@ -21,7 +22,7 @@ def visualize(loader, loader_outputs_list_of_batches=False):
         the_iter = itertools.chain.from_iterable(loader) if loader_outputs_list_of_batches else loader
         for subset in the_iter:
             print(subset.meta.tag)
-            subset = dtr.to_device('cpu', subset)
+            subset = subset.to('cpu')
             subset['image'] = trackertraincode.pipelines.unwhiten_image(subset['image'])
             subset = dtr.unnormalize_batch(subset)
             subset = dtr.to_numpy(subset)

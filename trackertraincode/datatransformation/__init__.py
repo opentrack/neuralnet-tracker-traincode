@@ -1,12 +1,11 @@
+from trackertraincode.datatransformation.misc import PutRoiFromLandmarks, StabilizeRoi
+from trackertraincode.datatransformation.image_geometric_torch import croprescale_image_torch, affine_transform_image_torch
+from trackertraincode.datatransformation.image_geometric_cv2 import affine_transform_image_cv2, croprescale_image_cv2
 from trackertraincode.datatransformation.affinetrafo import (
     position_normalization, position_unnormalization, 
-    apply_affine2d,
-    affine_transform_image_torch,
-    affine_transform_image_cv2,
-    croprescale_image_torch,
-    croprescale_image_cv2)
+    apply_affine2d)
 
-from trackertraincode.datatransformation.imageaugment import (
+from trackertraincode.datatransformation.image_intensity import (
     KorniaImageDistortions,
     RandomBoxBlur, 
     RandomPlasmaBrightness, 
@@ -32,8 +31,7 @@ from trackertraincode.datatransformation.loader import (
     collate_list_of_batches,
     undo_collate,
     DeleteKeys,
-    WhitelistKeys,
-    to_device)
+    WhitelistKeys)
 
 from trackertraincode.datatransformation.normalization import (
     normalize_batch,
@@ -51,9 +49,7 @@ from trackertraincode.datatransformation.core import (
     from_numpy_or_tensor
 )
 
-from trackertraincode.datatransformation.otheraugment import (
-    PutRoiFromLandmarks,
-    StabilizeRoi,
+from trackertraincode.datatransformation.sample_geometric import (
     RandomFocusRoi,
     FocusRoi,
     RoiFocusRandomizationParameters,

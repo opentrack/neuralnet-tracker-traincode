@@ -142,6 +142,14 @@ class Batch:
     def pin_memory(self):
         return Batch(self.meta, pin_memory(self._data))
 
+    def copy(self):
+        '''Shallow copy.'''
+        return Batch(self.meta, **self._data)
+
+    def to(self, *args, **kwargs):
+        assert all(isinstance(x,torch.Tensor) for x in self._data.values()), "Only applicable to PyTorch"
+        return Batch(self.meta, ((k,v.to(*args,**kwargs)) for k,v in self._data.items()))
+
 
     class Collation(object):
         def __init__(self, divide_by_tag : bool = True, divide_by_image_size : bool = False, ragged_categories : Optional[Set[Any]] = None):

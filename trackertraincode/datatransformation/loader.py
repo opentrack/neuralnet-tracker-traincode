@@ -118,10 +118,3 @@ class WhitelistKeys(object):
             if not k in self.keys:
                 del sample[k]
         return sample
-
-# TODO move to core
-def to_device(device : str, batch : Batch):
-    batch = copy(batch)
-    for k, v in batch.items():
-        batch[k] = v.to(device, non_blocking=True)
-    return batch

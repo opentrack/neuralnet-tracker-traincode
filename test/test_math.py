@@ -1,11 +1,12 @@
 from scipy.spatial.transform import Rotation
 from trackertraincode.neuralnets.math import affinevecmul, random_choice
-from trackertraincode.neuralnets.torchquaternion import mult, rotate, tomatrix, from_rotvec, iw, to_rotvec, slerp, geodesicdistance
+from trackertraincode.neuralnets.torchquaternion import mult, rotate, tomatrix, from_rotvec, iw, to_rotvec, slerp, geodesicdistance, from_matrix, positivereal
 from trackertraincode.neuralnets.affine2d import Affine2d, roi_normalizing_transform
 
 import torch
 import numpy as np
-    
+import onnx
+import io
 
 def test_quaternions():
         us = Rotation.from_rotvec(np.random.uniform(0.,1.,size=(7,3)))
@@ -52,6 +53,56 @@ def test_quaternions():
         angle_difference = geodesicdistance(torch.from_numpy(rots.as_quat()), torch.from_numpy(rots2.as_quat()))
         expected_angle_diff = (rots.inv() * rots2).magnitude()
         assert np.allclose(angle_difference, expected_angle_diff)
+
+        for rots in [Rotation.random(100), Rotation.identity()]:
+                input_mat = rots.as_matrix()
+                expected_quat = positivereal(torch.from_numpy(rots.as_quat()))
+                output_quat = from_matrix(torch.from_numpy(input_mat))
+                np.testing.assert_allclose(expected_quat.numpy(), output_quat.numpy())
+
+
+
+def _export_func(model, inputs, filename):
+        torch.onnx.export(
+                model,  # model being run
+                inputs,  # model input (or a tuple for multiple inputs)
+                filename,
+                training=torch.onnx.TrainingMode.EVAL,
+                export_params=True,  # store the trained parameter weights inside the model file
+                opset_version=13,  # the ONNX version to export the model to
+                do_constant_folding=True,  # whether to execute constant folding for optimization
+                keep_initializers_as_inputs=False,
+                verbose=False)
+
+
+def test_quaternion_mult_onnx_export(tmp_path):
+        class Model(torch.nn.Module):
+                def __call__(self, q, p):
+                        return mult(q,p)
+        
+        q = torch.from_numpy(Rotation.random(10).as_quat())
+        p = torch.from_numpy(Rotation.random(10).as_quat())
+        
+        _export_func(
+                Model(),  # model being run
+                (q,p),  # model input (or a tuple for multiple inputs)
+                tmp_path / 'mult_model.onnx')
+
+
+def test_quaternion_rotate_onnx_export(tmp_path):
+        class Model(torch.nn.Module):
+                def __call__(self, q, p):
+                        return rotate(q,p)
+        
+        q = torch.from_numpy(Rotation.random(10).as_quat())
+        p = torch.from_numpy(np.random.uniform(-10.,10.,size=(10,3)))
+        
+        # /tmp/pytest-of-mwelter/pytest-current/test_quaternion_rotate_onnx_excurrent/rotate_model.onnx
+        _export_func(
+                Model(),  # model being run
+                (q,p),  # model input (or a tuple for multiple inputs)
+                tmp_path / 'rotate_model.onnx')
+
 
 
 def test_transforms():

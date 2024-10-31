@@ -1,8 +1,6 @@
 import numpy as np
 from copy import copy
 from typing import Callable, Set, Sequence, Union, List, Tuple, Dict, Optional, NamedTuple
-from functools import partial
-import enum
 
 import torch
 from torch import Tensor
@@ -10,27 +8,24 @@ import torch.nn.functional as F
 
 from trackertraincode.pipelines import Batch
 from trackertraincode.datasets.batch import Metadata
-from trackertraincode.datasets import preprocessing
 from trackertraincode.neuralnets.affine2d import Affine2d
 from trackertraincode.datasets.dshdf5pose import FieldCategory, imagelike_categories
-from trackertraincode.neuralnets.math import random_choice, random_uniform
 from trackertraincode.datatransformation.core import get_category
 
+from trackertraincode.datatransformation.image_geometric_cv2 import (
+    affine_transform_image_cv2, croprescale_image_cv2, DownFilters, UpFilters)
 from trackertraincode.datatransformation.affinetrafo import (
     apply_affine2d, 
-    croprescale_image_torch,
-    croprescale_image_cv2,
-    affine_transform_image_cv2,
-    affine_transform_image_torch,
     position_normalization,
     position_unnormalization)
-from trackertraincode.facemodel.bfm import ScaledBfmModule, BFMModel
-from trackertraincode.neuralnets.modelcomponents import PosedDeformableHead
+
 
 class RoiFocusRandomizationParameters(NamedTuple):
     scales : torch.Tensor # Shape B
     angles : torch.Tensor # Shape B
     translations : torch.Tensor # Shape (B, 2)
+    upfilter : Optional[UpFilters] = None
+    downfilter : Optional[DownFilters] = None
 
 
 def RandomFocusRoi(new_size, roi_variable='roi', rotation_aug_angle : float = 30., extension_factor = 1.1, insert_backtransform=False):
@@ -48,7 +43,6 @@ def FocusRoi(new_size, extent_factor, roi_variable='roi', insert_backtransform=F
         roi_variable,
         insert_backtransform)
 
-
 class MakeRoiRandomizationParameters(object):
     def __init__(self, rotation_aug_angle, extension_factor):
         self.rotation_aug_angle = rotation_aug_angle
@@ -58,10 +52,13 @@ class MakeRoiRandomizationParameters(object):
         scales = torch.randn(size=B).mul(0.1).clip(-0.5,0.5).add(self.extension_factor)
         translations = torch.randn(size=B+(2,)).mul(0.5).clip(-1., 1.)
         angles = self._pick_angles(B, self.rotation_aug_angle) if self.rotation_aug_angle else torch.zeros(size=B)
+
         return RoiFocusRandomizationParameters(
             scales = scales,
             angles = angles,
-            translations = translations)
+            translations = translations,
+            upfilter = 'linear',
+            downfilter = 'area')
 
     def _pick_angles(self, B : tuple, angle : float):
         angles = torch.full(B, fill_value=np.pi*angle/180.)
@@ -89,30 +86,46 @@ class GeneralFocusRoi(object):
         self._max_beyond_border_shift = 0.3
         self.make_randomization_parameters = make_randomization_parameters
 
+    
+    @staticmethod
+    def _compute_view_roi(face_bbox : torch.Tensor, enlargement_factor : torch.Tensor, translation_factor : torch.Tensor, beyond_border_shift : float):
+        '''
+        Computes the expanded and shifted ROI based on the face bounding box.
+        
+        Case 1: small roi
+                |--- bbox ----|
+             |-roi-|
+             <-> At most [beyond_border_shift] of ROI sidelength
+        Case 2: large roi
+                |--- bbox ----|
+                     |-------- roi -------|
+                 <--> At most [beyond_border_shift] of bounding box side lenght
 
-    def _compute_view_roi(self, face_roi : torch.Tensor, enlargement_factor : torch.Tensor, translation_distribution : torch.Tensor, beyond_border_shift : float):
+        Args:
+            enlargement_factor: By how much the face bounding box is scaled up
+            translation_factor: Random number between -1 and 1 indicating the movement of the face roi within the expanded roi
+            beyond_border_shift: Controls the length up to which which ROI and original BBOX may not intersect.
         '''
-        enlargement_factor: By how much the current roi is scaled up
-        translation_distribution: Random number between -1 and 1 indicating the movement of the face roi within the expanded roi
-        beyond_border_shift: Fraction of the original roi by which the face can be moved beyond the border of the expanded roi
-        '''
-        x0, y0, x1, y1 = torch.moveaxis(face_roi, -1, 0)
-        rx, ry = translation_distribution.moveaxis(-1,0)
-        roi_w = x1-x0
-        roi_h = y1-y0
+        assert face_bbox.shape[:-1] == enlargement_factor.shape
+        assert face_bbox.shape[:-1] == translation_factor.shape[:-1]
+        x0, y0, x1, y1 = face_bbox.unbind(-1)
+        rx, ry = translation_factor.unbind(-1)
+        # Size and center of the BBox.
+        bbox_w = x1-x0
+        bbox_h = y1-y0
         cx = 0.5*(x1+x0)
         cy = 0.5*(y1+y0)
-        size = torch.maximum(roi_w, roi_h)*enlargement_factor
-        wiggle_room_x = F.relu(size-roi_w)
-        wiggle_room_y = F.relu(size-roi_h)
-        tx = (wiggle_room_x * 0.5 + roi_w * beyond_border_shift) * rx
-        ty = (wiggle_room_y * 0.5 + roi_h * beyond_border_shift) * ry
+        # Size of the expanded ROI.
+        size = torch.maximum(bbox_w, bbox_h)*enlargement_factor
+        wiggle_room_x = 0.5*torch.abs(size-bbox_w) + beyond_border_shift*torch.minimum(size, bbox_w)
+        wiggle_room_y = 0.5*torch.abs(size-bbox_h) + beyond_border_shift*torch.minimum(size, bbox_h)
+        tx = wiggle_room_x * rx
+        ty = wiggle_room_y * ry
         x0 = cx - size*0.5 + tx
         x1 = cx + size*0.5 + tx
         y0 = cy - size*0.5 + ty
         y1 = cy + size*0.5 + ty
         new_roi = torch.stack([x0, y0, x1, y1], dim=-1)
-        new_roi = torch.round(new_roi).to(torch.int32)
         return new_roi
 
 
@@ -156,13 +169,15 @@ class GeneralFocusRoi(object):
         self._maybe_account_for_video(sample.meta, params)
 
         view_roi = self._compute_view_roi(roi, params.scales, params.translations, self._max_beyond_border_shift)
+        view_roi = torch.round(view_roi).to(torch.int32)
         tr = self._compute_point_transform_from_roi(B, view_roi, self.new_size)
         tr = self._center_rotation_tr(params.angles) @ tr
 
+        # TODO: this won't work for videos ...
         if params.angles.item() != 0.: 
-            image_transform_function = lambda img: affine_transform_image_cv2(img, tr, self.new_size)
+            image_transform_function = lambda img: affine_transform_image_cv2(img, tr, self.new_size, downfilter=params.downfilter, upfilter=params.upfilter)
         else:
-            image_transform_function = lambda img: croprescale_image_cv2(img, view_roi, self.new_size)
+            image_transform_function = lambda img: croprescale_image_cv2(img, view_roi, self.new_size, downfilter=params.downfilter, upfilter=params.upfilter)
 
         for k, v in sample.items():
             c = get_category(sample, k)
@@ -177,55 +192,6 @@ class GeneralFocusRoi(object):
 
         sample.meta._imagesize = self.new_size
         return sample
-
-
-class PutRoiFromLandmarks(object):
-    def __init__(self, extend_to_forehead = False):
-        self.extend_to_forehead = extend_to_forehead
-        self.headmodel = PosedDeformableHead(ScaledBfmModule(BFMModel()))
-
-    def _create_roi(self, landmarks3d, sample):
-        if self.extend_to_forehead:
-            vertices = self.headmodel(
-                sample['coord'],
-                sample['pose'],
-                sample['shapeparam'])
-            min_ = torch.amin(vertices[...,:2], dim=-2)
-            max_ = torch.amax(vertices[...,:2], dim=-2)
-        else:
-            min_ = torch.amin(landmarks3d[...,:2], dim=-2)
-            max_ = torch.amax(landmarks3d[...,:2], dim=-2)
-        roi = torch.cat([min_, max_], dim=0).to(torch.float32)
-        return roi
-
-    def __call__(self, sample : Batch):
-        if 'pt3d_68' in sample:
-            sample['roi'] = self._create_roi(sample['pt3d_68'], sample)
-        return sample
-
-
-class StabilizeRoi(object):
-    def __init__(self, alpha=0.01, destination='roi'):
-        self.roi_filter_alpha = alpha
-        self.last_roi = None
-        self.last_id = None
-        self.destination = destination
-
-    def filter_roi(self, sample):
-        roi = sample['roi']
-        id_ = sample['individual'] if 'individual' in sample else None
-        if id_ == self.last_id and self.last_roi is not None:
-            roi = self.roi_filter_alpha*roi + (1.-self.roi_filter_alpha)*self.last_roi
-        #     print (f"Filt: {id_}")
-        # else:
-        #     print (f"Raw: {id_}")
-        self.last_roi = roi
-        self.last_id = id_
-        return roi
-        
-    def __call__(self, batch):
-        batch[self.destination] = self.filter_roi(batch)
-        return batch
 
 
 def horizontal_flip_and_rot_90(p_rot : float, sample : Batch):

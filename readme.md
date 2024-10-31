@@ -1,13 +1,24 @@
-# OpNet: On the power of data augmentation for head pose estimation networks
+OpenTrack "NeuralNet Tracker" Training & Evaluation
+===================================================
 
-A.K.A. OpenTrack's NeuralNet Tracker Training and Evaluation Code
+/ [**"OpNet: On the power of data augmentation for head pose estimation"**](https://arxiv.org/abs/2407.05357)
 
-Intro
------
+If you are looking for the code for the publication please note the [`paper` branch](https://github.com/opentrack/neuralnet-tracker-traincode/tree/paper),
+which is a special tailored snapshot for the publication.
 
-This branch contains the code for the publication. Beware, it also contains leftover things from past experiments.
+This repository contains the code to train the neural nets for the  NeuralNet tracker plugin of [Opentrack](https://github.com/opentrack/opentrack). It allows head tracking with a simple webcam.
 
-This readme contains instructions for evaluation and training.
+
+Overview
+--------
+
+The tracker plugin is based on deep learning, i.e. neural network models optimized using data to perform their tasks.
+There are two parts: A localizer network, and the actual pose estimation network.
+The localizer tries to find a single face and generates a bounding box around it from where a crop is extracted for the pose network to analyze.
+
+In the following there are steps outlined to reproduce the networks
+delivered with OpenTrack. This includes training and evaluation. However, the instructions are currently focussed on the pose estimator. At the end there is a section on the localizer.
+
 
 Install
 -------
@@ -42,13 +53,15 @@ Evaluation
 
 Download AFLW2000-3D from http://www.cbsr.ia.ac.cn/users/xiangyuzhu/projects/3DDFA/main.htm.
 
+Biwi can be obtained from Kaggle https://www.kaggle.com/datasets/kmader/biwi-kinect-head-pose-database. I couldn't find a better source that is still accessible.
+
 Download a pytorch model checkpoint.
 
 * Baseline Ensemble: https://drive.google.com/file/d/19LrssD36COWzKDp7akxtJFeVTcltNVlR/view?usp=sharing
 * Additionally trained on Face Synthetics (BL+FS): https://drive.google.com/file/d/19zN8KICVEbLnGFGB5KkKuWrPjfet-jC8/view?usp=sharing
 * Labeling Ensemble (RA-300W-LP from Table 3): https://drive.google.com/file/d/13LSi6J4zWSJnEzEXwZxr5UkWndFXdjcb/view?usp=sharing
 
-### Option 1
+### Option 1 (AFLW2000 3D)
 
 Run `scripts/AFLW20003dEvaluation.ipynb`
 It should give results pretty close to the paper. The face crop selection is different though and so the result won't be exactly the same.
@@ -58,59 +71,62 @@ It should give results pretty close to the paper. The face crop selection is dif
 Run the preprocessing and then the evaluation script.
 
 ```bash
-# The output filename "aflw2k.h5" must batch the hardcoded value in "pipelines.py"
-python scripts/dsaflw2k_processing.py $DATADIR/AFLW2000-3D.zip $DATADIR/aflw2k.h5`
+# Preprocess the data. The output filename "aflw2k.h5" must match the hardcoded value in "pipelines.py"
+python scripts/dsaflw2k_processing.py <path to>/AFLW2000-3D.zip $DATADIR/aflw2k.h5`
 
 # Will look in $DATADIR for aflw2k.h5.
 python scripts/evaluate_pose_network.py --ds aflw2k3d <path to model(.onnx|.ckpt)>
 ```
 
-It supports ONNX conversions as well as pytorch checkpoints. But the script must be adapted to the concrete model configuration for the checkpoint if that is used. If you wish to process the outputs further, like for averaging like in the paper, there is an option to generate json files.
+It supports ONNX conversions as well as PyTorch checkpoints. For PyTorch the script must be adapted to the concrete model configuration for the checkpoint. If you wish to process the outputs further, like for averaging like in the paper, there is an option to generate json files.
+
+Evaluation on the Biwi benchmark works similarly. However, we use the annotations file from https://github.com/pcr-upm/opal23_headpose in order to adhere to the experimental protocol. It can be found under https://github.com/pcr-upm/opal23_headpose/blob/main/annotations/biwi_ann.txt.
+```bash
+# Preprocess the data.
+python --opal-annotation <path to>/biwi_ann.txt scripts/dsprocess_biwi.py <path to>/biwi.zip $DATADIR/biwi-v3.h5
+
+# Will look in $DATADIR for biwi-v3.h5.
+python scripts/evaluate_pose_network.py --ds biwi --roi-expansion 0.8 --perspective-correction <path to model(.onnx|.ckpt)>
+```
+You want the `--perspective-correction` for SOTA results. It enables that the orientation obtained from the face crop is corrected for camera perspective since with the Kinect's field of view, the assumption of orthographic projection no longer holds true. I.e. the pose from the crop is transformed into the global coordinate frame. W.r.t this frame it is compared with the original labels. Without the correction, the pose from the crop is taken directly for comparison with the labels.
+Setting `--roi-expansion 0.8` causes the cropped area to be smaller relative to the bounding box annotation. That is also necessary for good results because the annotations have much larger bounding boxes than the networks were trained with.
 
 
 Integration in OpenTrack
 ------------------------
 
-https://github.com/opentrack/opentrack
-
- It currently has some older models though. Choose the "Neuralnet" tracker plugin.
-
+Choose the "Neuralnet" tracker plugin. It currently comes with some older models which don't
+achieve the same SOTA benchmark results but are a little bit more noise resistent and invariant
+to eye movements.
 
 Training
 --------
 
-Several datasets are used. All of which are preprocessed and the result (partially) stored in h5 files.
+Rough guidelines for reproduction follow.
 
-Rough guidelines for reproduction follow. First to get the data there is
-the expositional script below which enumerates everything.
+### Datasets
 
-```bash
-# 300W-LP
-# Go to http://www.cbsr.ia.ac.cn/users/xiangyuzhu/projects/3DDFA/main.htm and find the download for 300W-LP.zip.
-# Currently it's on google drive with the ID as used below. Better check it yourself.
-gdown 0B7OEHD3T4eCkVGs0TkhUWFN6N1k
-# Note: gdown is a pip installable tool for downloading from google drive. You can ofc use anything you want.
+#### 300W-LP & AFLW2000-3d
 
-# AFLW2000-3d
-wget www.cbsr.ia.ac.cn/users/xiangyuzhu/projects/3DDFA/Database/AFLW2000-3D.zip
+There should be download links for `300W-LP.zip` and `AFLW2000-3D.zip` on http://www.cbsr.ia.ac.cn/users/xiangyuzhu/projects/3DDFA/main.htm.
 
-#LaPa Megaface 3D Labeled "Large Pose" Extension
-#https://drive.google.com/file/d/1K4CQ8QqAVXj3Cd-yUt3HU9Z8o8gDmSEV/view?usp=drive_link
-$ gdown 1K4CQ8QqAVXj3Cd-yUt3HU9Z8o8gDmSEV
+#### 300W-LP Reproduction
+My version of 300W-LP with custom out-of-plane rotation augmentation applied.
+Includes "closed-eyes" augmentation as well as directional illumination.
+On Google Drive https://drive.google.com/file/d/1uEqba5JCGQMzrULnPHxf4EJa04z_yHWw/view?usp=drive_link.
 
-#300W-LP Reproduction
-#https://drive.google.com/file/d/1uEqba5JCGQMzrULnPHxf4EJa04z_yHWw/view?usp=drive_link
-$ gdown 1uEqba5JCGQMzrULnPHxf4EJa04z_yHWw
+#### LaPa Megaface 3D Labeled "Large Pose" Extension
+My pseudo / semi-automatically labeled subset of the Megaface frames from LaPa.
+On Google Drive https://drive.google.com/file/d/1K4CQ8QqAVXj3Cd-yUt3HU9Z8o8gDmSEV/view?usp=drive_link.
 
-#WFLW 3D Labeled "Large Pose" Extension
-#https://drive.google.com/file/d/1SY33foUF8oZP8RUsFmcEIjq5xF5m3oJ1/view?usp=drive_link
-$ gdown 1SY33foUF8oZP8RUsFmcEIjq5xF5m3oJ1
+####  WFLW 3D Labeled "Large Pose" Extension
+My pseudo / semi-automatically labeled subset.
+On Google Drive https://drive.google.com/file/d/1SY33foUF8oZP8RUsFmcEIjq5xF5m3oJ1/view?usp=drive_link.
 
-# Face Synthetics (https://github.com/microsoft/FaceSynthetics)
-wget --tries=0 --continue --server-response --timeout=0 --retry-connrefused https://facesyntheticspubwedata.blob.core.windows.net/iccv-2021/dataset_100000.zip
-```
+#### Face Synthetics
+There should be a download link on https://github.com/microsoft/FaceSynthetics for the 100k samples variant `dataset_100000.zip`.
 
-Now some preprocessing and unpacking:
+### Preprocessing
 
 ```bash
 python scripts/dsprocess_aflw2k.py AFLW2000-3D.zip $DATADIR/aflw2k.h5
@@ -128,6 +144,8 @@ unzip reproduction_300wlp-v12.zip -d ../$DATADIR/
 ```
 
 The processed files can be inspected in the notebook `DataVisualization.ipynb`.
+
+### Training Process
 
 Now training should be possible. For the baseline it should be:
 ```bash
@@ -159,6 +177,20 @@ It will look at the environment variable `DATADIR` to find the datasets. Notable
 --ds "repro_300_wlp" # Train only on the 300W-LP reproduction
 --ds "repro_300_wlp+lapa_megaface_lp+wflw_lp+synface" # Train the "BL + FS" case which should give best performing models.
 ```
+### Deployment
+
+I use ONNX for deployment and most evaluation purposes. There is a script for conversion. WARNING: it is necessary to adapt its code to the model configuration. :-/ It is easy though. Only one statement where the model is instantiated needs to be changed.  The script has two modes. For exports for OpenTrack use
+```bash
+python scripts/export_model.py --posenet <model.ckpt>
+```
+It omits the landmark predictions and renames the output tensors (for historical reasons). The script performs sanity checks to ensure the outputs from ONNX are almost equal to PyTorch outputs.
+To use the model in OpenTrack, find the directory with the other `.onnx` models and copy the new one there. Then in OpenTrack, in the tracker settings, there is a button to select the model file.
+
+For evaluation use
+```
+python scripts/export_model.py --full --posenet <model.ckpt>
+```
+The model created in this way includes all outputs.
 
 Creation of 3D Labeled WFLW & LaPa Large Pose Expansions
 --------------------------------------------------------
@@ -210,3 +242,12 @@ files. The other label fields are label data and should be relatively self-expla
 
 Relevant code for reading and writing those files can be found in `trackertraincode/datasets/dshdf5.py`, 
 `trackertraincode/datasets/dshdf5pose.py` and the preprocessing scripts `scripts/dsprocess_*.py`.
+
+Localizer Network
+-----------------
+
+There is an old notebook to train this network.
+
+The training data is a processed version of the Wider Face dataset. The processing accounts for the fact that Wider Face contains images with potentially many faces. Therefore, sections which contain only one face or none are extracted.
+
+The localizer network is trained to generate a "heatmap" with a peak where it suspects the center of a face. In addition, parameters of a bounding box are outputted.

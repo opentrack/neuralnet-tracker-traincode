@@ -72,14 +72,21 @@ def poor_mans_roi(points: np.ndarray):
     return np.array([x0, y0, x1, y1])
 
 
-def improve_roi_with_face_detector(img, roi, mtcnn : MTCNN):
-    new_roi, _ = mtcnn.detect(img)
+def improve_roi_with_face_detector(img, roi, mtcnn : MTCNN, iou_threshold : float = 0.25, confidence_threshold : float = 0.):
+    new_roi, confidences = mtcnn.detect(img)
     if new_roi is not None:
+        # Filter by confidence
+        mask = confidences > confidence_threshold
+        new_roi = new_roi[mask]
+        confidences = confidences[mask]
+        if len(new_roi) <= 0:
+            return roi, False
+        # Find the box with highest iou overlap with input roi
         iou = box_iou(roi, new_roi)
         i = np.argmax(iou)
         new_roi = new_roi[i]
         iou = iou[i]
-        if iou > 0.25:
+        if iou > iou_threshold:
             return new_roi, True
     return roi, False
 

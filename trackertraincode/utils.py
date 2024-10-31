@@ -13,10 +13,18 @@ def identity(arg):
     return arg
 
 def as_hpb(rot):
+    '''This uses an aeronautic-like convention. 
+    
+    Rotation are applied (in terms of extrinsic rotations) as follows in the given order:
+    Roll - around the forward direction.
+    Pitch - around the world lateral direction
+    Heading - around the world vertical direction
+    '''
     return rot.as_euler('YXZ')
 
 
 def from_hpb(hpb):
+    '''See "as_hpb"'''
     return Rotation.from_euler('YXZ', hpb)
 
 

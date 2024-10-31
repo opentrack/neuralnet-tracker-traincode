@@ -3,7 +3,6 @@ import os
 from matplotlib import projections, pyplot
 from mpl_toolkits.mplot3d import Axes3D
 import numpy as np
-from scipy.spatial.transform import Rotation
 import random
 from functools import partial
 
@@ -17,6 +16,7 @@ import trackertraincode.datatransformation as dtr
 from trackertraincode.datasets.dshdf5pose import Hdf5PoseDataset
 import trackertraincode.vis as vis
 
+# TODO: rename to test_modelcomponents.py
 
 
 def test_landmarks():
@@ -52,5 +52,6 @@ def test_landmarks():
     assert torch.max(diff) < 0.01, f"Landmark reconstruction error too large: {torch.max(diff)}"
 
 
+
 if __name__ == '__main__':
-    test_landmarks()
+    raise RuntimeError("Run pytest")

@@ -15,6 +15,7 @@ import functools
 
 import torch.optim as optim
 import torch
+import torch.nn as nn
 import trackertraincode.neuralnets.losses as losses
 import trackertraincode.neuralnets.models as models
 import trackertraincode.neuralnets.negloglikelihood as NLL
@@ -96,18 +97,26 @@ def setup_datasets(args : MyArgs):
     return train_loader, test_loader, ds_size
 
 
-def parameter_groups_with_decaying_learning_rate(parameter_groups, slow_lr, fast_lr):
-    # Note: Parameters are enumerated in the order from the input to the output layers
-    factor = (fast_lr/slow_lr)**(1./(len(parameter_groups)-1))
+def find_variance_parameters(net : nn.Module):
+    if isinstance(net,(NLL.FeaturesAsTriangularScale,NLL.FeaturesAsDiagonalScale,NLL.DiagonalScaleParameter)):
+        return list(net.parameters())
+    else:
+        return sum((find_variance_parameters(x) for x in net.children()), start=[])
+
+
+def setup_lr_with_slower_variance_training(net, base_lr):
+    variance_params = find_variance_parameters(net)
+    other_params = list(frozenset(net.parameters()).difference(frozenset(variance_params)))
     return [
-        { 'params' : p, 'lr' : slow_lr*factor**i } for i,p in enumerate(parameter_groups)
+        { 'params' : other_params, 'lr' : base_lr },
+        { 'params' : variance_params, 'lr' : 0.1*base_lr }
     ]
 
 
 def create_optimizer(net, args : MyArgs):
-    to_optimize = net.parameters()
-    #optimizer = optim.AdamW(to_optimize, lr=args.lr, weight_decay=1.e-3)
-    optimizer = optim.Adam(to_optimize, lr=args.lr)
+    optimizer = optim.Adam(
+        setup_lr_with_slower_variance_training(net,args.lr),
+        lr=args.lr,)
     if args.find_lr:
         print ("LR finding mode!")
         n_epochs = args.epochs
@@ -116,7 +125,8 @@ def create_optimizer(net, args : MyArgs):
         scheduler = optim.lr_scheduler.LambdaLR(optimizer, lambda e: base**e, verbose=True)
     else:
         n_epochs = args.epochs
-        scheduler = train.LinearUpThenSteps(optimizer, max(1,n_epochs//(2*10)), 0.1, [n_epochs//2])
+        #scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, [n_epochs//2], 0.1)
+        scheduler = train.ExponentialUpThenSteps(optimizer, max(1,n_epochs//(10)), 0.1, [n_epochs//2])
 
     return optimizer, scheduler, n_epochs
 
@@ -133,8 +143,6 @@ class SaveBestSpec(NamedTuple):
         
 def setup_losses(args : MyArgs, net):
     C = train.Criterion
-
-    chasface = [ C('hasface', losses.HasFaceLoss(), 0.01) ]
     cregularize = [
         C('quatregularization1', losses.QuaternionNormalizationSoftConstraint(), 1.e-6),
     ]
@@ -145,24 +153,29 @@ def setup_losses(args : MyArgs, net):
     shapeparamloss = []
 
     if args.with_nll_loss:
-        nllw = 0.01
+        def ramped_up_nll_weight(multiplier):
+            def wrapped(step):
+                strength = min(1., max(0., (step / args.epochs - 0.1) * 10.))
+                return 0.01 * strength * multiplier
+            return wrapped
+            #return multiplier * 0.01
         poselosses += [ 
-            C('nllrot', NLL.QuatPoseNLLLoss().to('cuda'), 0.3*nllw), 
-            C('nllcoord', NLL.CorrelatedCoordPoseNLLLoss().cuda(), 0.3*nllw)
+            C('nllrot', NLL.QuatPoseNLLLoss().to('cuda'), ramped_up_nll_weight(0.5)),
+            C('nllcoord', NLL.CorrelatedCoordPoseNLLLoss().cuda(), ramped_up_nll_weight(0.5))
         ]
         if args.with_roi_train:
             roilosses += [
-                C('nllbox', NLL.BoxNLLLoss(distribution='gaussian'), 0.01*nllw)
+                C('nllbox', NLL.BoxNLLLoss(distribution='gaussian'), ramped_up_nll_weight(0.01))
             ]
         if args.with_pointhead:
             pointlosses += [ 
-                C('nllpoints3d', NLL.Points3dNLLLoss(chin_weight=0.8, eye_weight=0., distribution='laplace').cuda(), 0.7*nllw) 
+                C('nllpoints3d', NLL.Points3dNLLLoss(chin_weight=0.8, eye_weight=0., distribution='gaussian').cuda(), ramped_up_nll_weight(0.5)) 
             ]
             pointlosses25d = [ 
-                C('nllpoints3d', NLL.Points3dNLLLoss(chin_weight=0.8, eye_weight=0., pointdimension=2, distribution='laplace').cuda(), 0.7*nllw) 
+                C('nllpoints3d', NLL.Points3dNLLLoss(chin_weight=0.8, eye_weight=0., pointdimension=2, distribution='gaussian').cuda(), ramped_up_nll_weight(0.5)) 
             ]
             shapeparamloss += [
-                C('nllshape', NLL.ShapeParamsNLLLoss(distribution='gaussian'), 0.05*nllw)
+                #C('nllshape', NLL.ShapeParamsNLLLoss(distribution='gaussian'), ramped_up_nll_weight(0.01))
             ]
     if 1:
         poselosses += [
@@ -176,29 +189,32 @@ def setup_losses(args : MyArgs, net):
             ]
         if args.with_pointhead:
             pointlosses += [ 
-                C('points3d', losses.Points3dLoss('l1', chin_weight=0.8, eye_weights=0.).cuda(), 0.7)
+                C('points3d', losses.Points3dLoss('l2', chin_weight=0.8, eye_weights=0.).cuda(), 0.5),
             ]
-            pointlosses25d += [ C('points3d', losses.Points3dLoss('l1', pointdimension=2, chin_weight=0.8, eye_weights=0.).cuda(), 0.7) ]
+            pointlosses25d += [ 
+                C('points3d', losses.Points3dLoss('l2', pointdimension=2, chin_weight=0.8, eye_weights=0.).cuda(), 0.5),                
+            ]
             shapeparamloss += [
-                C('shp_l2', losses.ShapeParameterLoss(), 0.05),
+                C('shp_l2', losses.ShapeParameterLoss(), 0.1),
+            ]
+            cregularize += [
+               C('nll_shp_gmm', losses.ShapePlausibilityLoss().cuda(), 0.1),
             ]
 
     train_criterions = { 
-        Tag.ONLY_POSE : train.MultiTaskLoss(poselosses + cregularize),
-        Tag.POSE_WITH_LANDMARKS :           train.MultiTaskLoss(poselosses + cregularize + pointlosses + shapeparamloss + roilosses),
-        Tag.POSE_WITH_LANDMARKS_3D_AND_2D : train.MultiTaskLoss(poselosses + cregularize + pointlosses + shapeparamloss + roilosses),
-        Tag.ONLY_LANDMARKS     : train.MultiTaskLoss(pointlosses    + cregularize),
-        Tag.ONLY_LANDMARKS_25D : train.MultiTaskLoss(pointlosses25d + cregularize),
-        Tag.FACE_DETECTION : train.MultiTaskLoss(chasface + roilosses),
+        Tag.ONLY_POSE : train.CriterionGroup(poselosses + cregularize),
+        Tag.POSE_WITH_LANDMARKS :           train.CriterionGroup(poselosses + cregularize + pointlosses + shapeparamloss + roilosses),
+        Tag.POSE_WITH_LANDMARKS_3D_AND_2D : train.CriterionGroup(poselosses + cregularize + pointlosses + shapeparamloss + roilosses),
+        Tag.ONLY_LANDMARKS     : train.CriterionGroup(pointlosses    + cregularize),
+        Tag.ONLY_LANDMARKS_25D : train.CriterionGroup(pointlosses25d + cregularize),
     }
     test_criterions = {
-        Tag.POSE_WITH_LANDMARKS : train.DefaultTestFunc(poselosses + pointlosses + roilosses + shapeparamloss),
-        Tag.FACE_DETECTION : train.DefaultTestFunc(chasface + roilosses),
+        Tag.POSE_WITH_LANDMARKS : train.DefaultTestFunc(poselosses + pointlosses + roilosses + shapeparamloss + cregularize),
     }
 
     savebest = SaveBestSpec(
-        [l.w for l in poselosses],
-        [ l.name for l in poselosses])
+        [ 1.0, 1.0, 1.0],
+        [ 'rot', 'xy', 'sz' ])
 
     return train_criterions, test_criterions, savebest
 
@@ -211,7 +227,6 @@ def create_net(args : MyArgs):
         enable_uncertainty=args.with_nll_loss,
         backbone_args={'use_blurpool' : args.with_blurpool}
     )
-
 
 def main():
     np.seterr(all='raise')
@@ -281,11 +296,11 @@ def main():
 
     if args.swa:
         swa_filename = join(args.outdir,f'swa_{swa_model.module.name}.ckpt')
-        torch.save(swa_model.module.state_dict(), swa_filename)
+        models.save_model(swa_model.module, swa_filename)
           
 
     last_save_filename = join(args.outdir,f'last_{net.name}.ckpt')
-    torch.save(net.state_dict(), last_save_filename)
+    models.save_model(net, last_save_filename)
 
     if args.export_onnx:
         from scripts.export_model import convert_posemodel_onnx
@@ -293,7 +308,7 @@ def main():
         net.to('cpu')
         convert_posemodel_onnx(net, filename=last_save_filename)
 
-        net.load_state_dict(torch.load(save_callback.filename))
+        net.load_state_dict(torch.load(save_callback.filename)['state_dict'])
         convert_posemodel_onnx(net, filename=save_callback.filename)
 
         if args.swa:
