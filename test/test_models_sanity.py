@@ -22,7 +22,7 @@ def timing_and_output(net, x):
 
 
 def backprop(net):
-    device = 'cuda'
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     B = 16
     net = copy.deepcopy(net)
     net.train()

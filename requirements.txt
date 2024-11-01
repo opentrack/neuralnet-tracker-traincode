@@ -1,0 +1,15 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+torchvision
+scipy
+numpy
+opencv-python
+kornia
+matplotlib
+tqdm
+h5py
+onnx
+onnxruntime
+strenum
+tabulate
+pytest

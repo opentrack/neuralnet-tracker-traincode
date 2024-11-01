@@ -382,7 +382,7 @@ class PerspectiveCorrector:
         self.f = 1. / math.tan(fov*math.pi/180.*0.5)
 
     def corrected_rotation(self, image_sizes : Tensor, coord : Tensor, pose : Tensor):
-        '''
+        r'''
             Explanation though top view
                                        ^ face-local z-axis
                          z-axis ^      |   ^ direction under which the CNN "sees" the face through it's crop

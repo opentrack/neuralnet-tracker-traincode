@@ -40,7 +40,7 @@ def test_Hdf5PoseDataset(tmpdir : Path):
 
     ds = dshdf5pose.Hdf5PoseDataset(filename, transform = mytrafo, dataclass = 42)
 
-    assert np.alltrue(ds.sequence_starts == np.asarray(sequence_starts))
+    assert np.all(ds.sequence_starts == np.asarray(sequence_starts))
 
     sample = ds[0]
     assert isinstance(sample, batch.Batch)

@@ -42,7 +42,7 @@ def clear_denormals(state_dict, threshold=1.e-20):
             mask = torch.abs(v) > threshold
             n = torch.count_nonzero(~mask)
             if n:
-                print (f"{k:40s}: {n:10d} ({n/np.product(v.shape)*100}%)")
+                print (f"{k:40s}: {n:10d} ({n/np.prod(v.shape)*100}%)")
             v *= mask.to(torch.float32)
     return state_dict
 
