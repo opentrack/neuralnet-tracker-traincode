@@ -26,7 +26,7 @@ from matplotlib import pyplot
 from pathlib import Path
 
 from trackertraincode.datasets.dshdf5pose import create_pose_dataset, FieldCategory
-from trackertraincode.datatransformation.affinetrafo import transform_roi, transform_keypoints
+from trackertraincode.datatransformation.tensors.affinetrafo import transform_roi, transform_keypoints
 from dsprocess_wflw import cropped
 
 C = FieldCategory

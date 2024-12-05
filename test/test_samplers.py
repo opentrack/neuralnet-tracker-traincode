@@ -6,9 +6,9 @@ from trackertraincode.datasets.randomized import make_concat_dataset_item_sample
 
 NUM_WORKERS = 2
 
-class TestSet(Dataset):
+class _TestSet(Dataset):
     def __init__(self, n, start=0):
-        super(TestSet,self).__init__()
+        super(_TestSet,self).__init__()
         self.n = n
         self.start = start
     def __len__(self):
@@ -40,7 +40,7 @@ def load_dataset(ds, batchsize = 1, concat=True, repeats=None, sampler=None, bat
 
 def test_test_set1():
     N = 10
-    ds = TestSet(N)
+    ds = _TestSet(N)
     y = [ y for y in ds ]
     assert np.all(y == np.arange(N))
 
@@ -51,8 +51,8 @@ def test_interleaved_datasets2():
     M = 10
     BS = 10
     ds = ConcatDataset([
-        TestSet(N1),
-        TestSet(N2, start=N1)
+        _TestSet(N1),
+        _TestSet(N2, start=N1)
     ])
     dssamplers = [
         SequentialSampler(ds.datasets[0]),

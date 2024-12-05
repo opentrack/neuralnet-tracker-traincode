@@ -19,14 +19,7 @@ import torch
 import torch.nn as nn
 from torch.optim.lr_scheduler import LambdaLR, CyclicLR
 
-
 from trackertraincode.datasets.batch import Batch
-import trackertraincode.neuralnets.io
-import trackertraincode.utils as utils
-
-
-def weighted_mean(x : Tensor, w : Tensor, dim) -> Tensor:
-    return torch.sum(x*w, dim).div(torch.sum(w,dim))
 
 
 class LossVal(NamedTuple):
@@ -96,13 +89,6 @@ class History:
     test  : List[Any] = dataclasses.field(default_factory=list)
     current_train_buffer : List[Any] = dataclasses.field(default_factory=list)
     logplot : bool = True
-
-
-
-# From https://stackoverflow.com/questions/15411967/how-can-i-check-if-code-is-executed-in-the-ipython-notebook
-def in_notebook():
-    from IPython import get_ipython
-    return get_ipython() is not None
 
 
 class TrainHistoryPlotter(object):
@@ -176,7 +162,7 @@ class TrainHistoryPlotter(object):
                 if history.test:
                     ax.plot(*np.array(history.test).T, label='test '+name, marker='x', color='b')
                 # FIXME: Hack with `startswith('nll')`
-                if history.logplot and not name.startswith('nll'):
+                if history.logplot and (not name.startswith('nll')) and (not name == 'loss'):
                     ax.set(yscale='log')
                 ax.grid(axis='y', which='both')
                 ax.legend()
@@ -273,132 +259,6 @@ class ConsoleTrainOutput(object):
     def close(self):
         pass
 
-
-@dataclasses.dataclass
-class State:
-    lossvals : Dict[str,Any]
-    epoch : int
-    step : int
-    visualizer : Union[TrainHistoryPlotter, ConsoleTrainOutput]
-    grad_norm : Optional[float]
-    num_samples_per_loss : Optional[defaultdict[int]] = None
-
-
-
-class VirtualEpochBatchIter(object):
-    def __init__(self, loader, num_samples):
-        self.num_samples = num_samples
-        self.iter = utils.cycle(loader)
-    def __iter__(self):
-        with tqdm.tqdm(total=self.num_samples) as bar:
-            counter = 0
-            while counter < self.num_samples:
-                batch = next(self.iter)
-                yield batch
-                size = sum(b.meta.batchsize for b in batch) if isinstance(batch,list) else batch.meta.batchsize
-                bar.update(size)
-                counter += size
-
-
-def NormalEpochBatchIter(loader):
-    for batch in tqdm.tqdm(loader):
-        yield batch
-
-
-def run_the_training(
-    n_epochs, 
-    optimizer,
-    net,
-    train_loader,
-    test_loader,
-    update_func,
-    test_func,
-    callbacks = [],
-    scheduler = None,
-    artificial_epoch_length = None,
-    close_plot_on_exit = False,
-    plotting = True,
-    plot_save_filename = None):
-
-    plotter = \
-        TrainHistoryPlotter(plot_save_filename) if plotting \
-            else ConsoleTrainOutput()
-
-    state = State(
-        lossvals = {},
-        epoch = 0,
-        step = 0,
-        visualizer = plotter,
-        grad_norm=None,
-        num_samples_per_loss = defaultdict(int)
-    )
-
-    with tqdm.tqdm(total=n_epochs) as epochbar:
-        if artificial_epoch_length is None:
-            train_iter = NormalEpochBatchIter(train_loader)
-        else:
-            train_iter = VirtualEpochBatchIter(train_loader, artificial_epoch_length)
-
-        for epoch in range(n_epochs):
-            state.epoch = epoch
-
-            net.train()
-
-            for batch in train_iter:
-                trainlossvals = update_func(net, batch, optimizer, state)
-                for name, (val, _) in concatenated_lossvals_by_name(itertools.chain.from_iterable(trainlossvals)).items():
-                    plotter.add_train_point(epoch, state.step, name, val)
-                state.step += 1
-                if state.grad_norm is not None:
-                    plotter.add_train_point(epoch, state.step, '|grad L|', state.grad_norm)
-
-            if state.num_samples_per_loss is not None:
-                print ("Samples: ", ', '.join([f"{k}: {v}" for k,v in  state.num_samples_per_loss.items()]))
-                state.num_samples_per_loss = None # Disable printing
-
-            plotter.summarize_train_values()
-
-            net.eval()
-
-            lossvals = losses_over_full_dataset(net, test_loader, test_func)
-            state.lossvals = lossvals
-            for name, l in lossvals:
-                plotter.add_test_point(epoch, name, l)
-
-            if scheduler is not None:
-                last_lr = next(iter(scheduler.get_last_lr()))
-                scheduler.step()
-                plotter.add_test_point(epoch, 'lr', last_lr)
-
-            plotter.update_graph()
-            epochbar.update(1)
-            
-            for callback in callbacks:
-                callback(state)
-
-    if close_plot_on_exit:
-        plotter.close()
-
-
-class SaveCallback(object):
-    def __init__(self, net, prefix='', model_dir=None):
-        self.net = net
-        self.prefix = prefix
-        self.model_dir = model_dir
-
-    @property
-    def net_name(self):
-        return self.net.name if hasattr(self.net,'name') else type(self.net).__name__
-
-    @property
-    def filename(self):
-        return join(self.model_dir, f'{self.prefix}{self.net_name}.ckpt')
-
-    def save(self):
-        os.makedirs(self.model_dir, exist_ok=True)
-        trackertraincode.neuralnets.io.save_model(self.net, self.filename)
-
-
 class DebugData(NamedTuple):
     parameters : dict[str,Tensor]
     batches : list[Batch]
@@ -467,89 +327,11 @@ class DebugCallback():
             raise RuntimeError("Bad state detected")
 
 
-class SaveBestCallback(SaveCallback):
-    def __init__(self, net, loss_names : Union[str,List[str]], model_dir=None, save_name_prefix : Optional[str] = None, weights : Optional[List[float]] = None, retain_max = 1):
-        if isinstance(loss_names, str):
-            loss_names = [ loss_names ]
-        if save_name_prefix is None:
-            save_name_prefix = '-'.join(loss_names)
-        if weights is None:
-            weights = [ 1. for _ in loss_names ]
-        assert len(weights) == len(loss_names)
-        super().__init__(net, f'best_{save_name_prefix}_', model_dir)
-        self.best_test_loss = float('inf')
-        self.loss_names = loss_names
-        self.weights = weights
-        self.save_name_prefix = save_name_prefix
-        self.retain_max = retain_max
-        self.num = 0
-        self.filenames = []
-        assert retain_max >= 1
-
-    def update_prefix(self):
-        if self.retain_max <= 1:
-            return
-        self.prefix = f'best_{self.save_name_prefix}_{self.num:02d}_'
-        self.num += 1
-
-    def roll_files(self):
-        if self.retain_max <= 1:
-            return
-        self.filenames.append(self.filename)
-        if len(self.filenames) > self.retain_max:
-            first = self.filenames.pop(0)
-            symlinkname = join(self.model_dir, f'best_{self.save_name_prefix}_{self.net_name}.ckpt')
-            os.unlink(first)
-            try:
-                os.unlink(symlinkname)
-            except FileNotFoundError:
-                pass
-            os.symlink(self.filename, symlinkname)
-
-    def _combined_loss(self, state : State):
-        d = dict(state.lossvals)
-        return sum((d[k]*w) for k,w in zip(self.loss_names, self.weights))
-
-    def __call__(self, state : State):
-        l = self._combined_loss(state)
-        if l < self.best_test_loss:
-            self.update_prefix()
-            self.best_test_loss = l
-            print (f"Save model for best {self.save_name_prefix}={l} to {self.filename} at epoch {state.epoch}")
-            self.save()
-            self.roll_files()
-
-
-class SaveInIntervals(SaveCallback):
-    def __init__(self, net, start_epoch, interval, model_dir=None):
-        super().__init__(net, 'intervalxx_', model_dir)
-        self.start_epoch = start_epoch
-        self.interval = interval
-    
-    def __call__(self, state : State):
-        since_start = state.epoch - self.start_epoch
-        if since_start >= 0 and since_start % self.interval == 0:
-            self.prefix = f'interval{state.epoch:02d}_'
-            self.save()
-
-
-def compute_inf_norm_of_grad(net : nn.Module):
-    device = next(iter(net.parameters())).device
-    result = torch.zeros((), device=device, dtype=torch.float32, requires_grad=False)
-    for p in net.parameters():
-        if p.grad is not None:
-            param_norm = p.grad.detach().data.norm(float('inf'))
-            result = torch.maximum(param_norm, result)
-    return result
-
-
 # g_debug = DebugCallback()
 
 
-def default_update_fun(net, batch : List[Batch], optimizer : torch.optim.Optimizer, state : State, loss : dict[Any, Criterion | CriterionGroup] | Criterion | CriterionGroup):
+def default_compute_loss(net, batch : List[Batch], current_epoch : int, loss : dict[Any, Criterion | CriterionGroup] | Criterion | CriterionGroup):
     # global g_debug
-
-    optimizer.zero_grad()
 
     inputs = torch.concat([b['image'] for b in batch], dim=0)
 
@@ -566,7 +348,7 @@ def default_update_fun(net, batch : List[Batch], optimizer : torch.optim.Optimiz
 
         # Get loss function and evaluate
         loss_func_of_subset : Union[Criterion,CriterionGroup] = loss[subset.meta.tag] if isinstance(loss, dict) else loss
-        multi_task_terms : List[LossVal] =  loss_func_of_subset.evaluate(subpreds, subset, state.epoch)
+        multi_task_terms : List[LossVal] =  loss_func_of_subset.evaluate(subpreds, subset, current_epoch)
 
         # Support loss weighting by datasets
         if 'dataset_weight' in subset:
@@ -593,61 +375,8 @@ def default_update_fun(net, batch : List[Batch], optimizer : torch.optim.Optimiz
         for i, v in enumerate(loss_list):
             loss_list[i] = v._replace(val = v.val.detach().to('cpu', non_blocking=True))
 
-    loss_sum.backward()
-
-    # g_debug.observe(net, batch, preds, all_lossvals)
-
-    if 1:
-        state.grad_norm = compute_inf_norm_of_grad(net).to('cpu', non_blocking=True)
-        # Gradients get very large more often than looks healthy ... Loss spikes a lot.
-        # Gradient magnitudes below 0.1 seem to be normal. Initially gradients are larger,
-        nn.utils.clip_grad_norm_(net.parameters(), 1.0, norm_type=float('inf'))
-
-    optimizer.step()
-
     torch.cuda.current_stream().synchronize()
-    return all_lossvals
-
-
-class DefaultTestFunc(object):
-    def __init__(self, criterions):
-        self.criterions = criterions
-    def __iadd__(self, crit):
-        self.criterions += crit
-        return self
-    def __call__(self, net, batch):
-        images = batch['image']
-        pred = net(images)
-        return [ (crit.name,crit.f(pred, batch)) for crit in self.criterions ]
-
-
-def losses_over_full_dataset(net : nn.Module, data_loader, test_func):
-    def convert(value):
-        if isinstance(value, (np.ndarray,float)):
-            return value
-        elif isinstance(value, torch.Tensor):
-            return value.detach().cpu().numpy()
-        else:
-            assert False, f'cannot convert value {value} of type {type(value)}'
-
-    values = {}
-    counts = defaultdict(lambda : 0)
-    for batch in data_loader:
-        actual_test_func = test_func[batch.meta.tag] if isinstance(test_func, dict) else test_func
-        with torch.no_grad():
-            named_losses = actual_test_func(net, batch)
-        for name, val in named_losses:
-            val = convert(val.mean())
-            try:
-                accumulator = values[name]
-            except KeyError:
-                values[name] = val
-            else:
-                accumulator += val
-            counts[name] += 1
-    for k, v in values.items():
-        v /= counts[k]
-    return list(values.items())
+    return loss_sum, all_lossvals
 
 
 ##########################################

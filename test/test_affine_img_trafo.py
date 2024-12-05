@@ -1,22 +1,19 @@
-import numpy as np
 from typing import Callable, Set, Sequence, Union, List, Tuple, Dict, Optional, NamedTuple, Any, Literal
+import numpy as np
 from matplotlib import pyplot
 import pytest
 import numpy.testing
 from functools import partial
-
+from kornia.geometry.subpix import spatial_expectation2d
 import torch
 import torch.nn.functional as F
 
 import trackertraincode.datatransformation as  dtr
-from trackertraincode.datatransformation.image_geometric_torch import croprescale_image_torch, affine_transform_image_torch
-from trackertraincode.datatransformation.image_geometric_cv2 import croprescale_image_cv2, affine_transform_image_cv2, DownFilters, UpFilters
+from trackertraincode.datatransformation.tensors import croprescale_image_cv2, affine_transform_image_cv2, DownFilters, UpFilters, croprescale_image_torch, affine_transform_image_torch
 from trackertraincode.neuralnets.affine2d import Affine2d
 from trackertraincode.neuralnets.math import affinevecmul
 from trackertraincode.datasets.batch import Batch, Metadata
-
-from kornia.geometry.subpix import spatial_expectation2d
-
+from trackertraincode.datatransformation.batch.geometric import GeneralFocusRoi
 
 '''
 Test consistency between scaling of an image and scaling of landmarks.
@@ -30,16 +27,35 @@ coordinates by x.
 '''
 
 
-def no_randomization(B, filter_args) -> dtr.RoiFocusRandomizationParameters:
-    return dtr.RoiFocusRandomizationParameters(
+@pytest.mark.parametrize('bbox,f,t,bbs, expected',[
+    ([-10,-10,10,10], 1., [-1.,0.], 0.3, [-16,-10,4,10]),
+    ([-10,-10,10,10], 1., [ 1.,0.], 0.3, [-4,-10,16,10]),
+    ([-10,-10,10,10], 1., [0.,-1.], 0.3, [-10,-16,10,4]),
+    ([-10,-10,10,10], 1., [0., 1.], 0.3, [-10,-4,10,16]),
+    ([-10,-10,10,10], 2., [0., 0.], 0.3, [-20,-20,20,20]),
+    ([-10,-10,10,10], 2., [-1., 0.], 0.3, [-36,-20,4,20]),
+    ([-10,-10,10,10], 0.5, [0., 0.], 0.3, [-5,-5,5,5]),
+    ([-10,-10,10,10], 0.5, [-1., 0.], 0.3, [-13,-5,-3,5]),
+])
+def test_compute_view_roi(bbox, f, t, bbs, expected):
+    outbox = GeneralFocusRoi._compute_view_roi(
+        face_bbox = torch.tensor(bbox, dtype=torch.float32),
+        enlargement_factor = torch.tensor(f),
+        translation_factor = torch.tensor(t),
+        beyond_border_shift = bbs)
+    assert outbox.numpy().tolist() == expected
+
+
+def no_randomization(B, filter_args) -> dtr.batch.RoiFocusRandomizationParameters:
+    return dtr.batch.RoiFocusRandomizationParameters(
         scales = torch.tensor(1.),
         angles = torch.tensor(0.),
         translations  = torch.tensor([0.,0.]),
         **filter_args)
 
 
-def with_some_similarity_trafo(B, filter_args) -> dtr.RoiFocusRandomizationParameters:
-    return dtr.RoiFocusRandomizationParameters(
+def with_some_similarity_trafo(B, filter_args) -> dtr.batch.RoiFocusRandomizationParameters:
+    return dtr.batch.RoiFocusRandomizationParameters(
         scales = torch.tensor(0.75),
         angles = torch.tensor(20.*np.pi/180.),
         translations  = torch.tensor([-0.1, 0.03]),
@@ -47,7 +63,7 @@ def with_some_similarity_trafo(B, filter_args) -> dtr.RoiFocusRandomizationParam
 
 UpDownSampleHint = Literal["up","down"]
 
-class TestData(NamedTuple):
+class _TestData(NamedTuple):
     S : int # size
     R : int # new size
     batch : Batch # Contains image, 3d points, and roi.
@@ -88,19 +104,16 @@ def make_test_data(scale_up_or_down : UpDownSampleHint):
     # to the last pixel completely    
     roi = torch.tensor([0.,0.,S,S])
 
-    batch = Batch(
-        Metadata(_imagesize = S, batchsize=0, categories=
-                 {'image' : dtr.FieldCategory.image, 
-                  'pt3d_68' : dtr.FieldCategory.points, 
-                  'roi' : dtr.FieldCategory.roi}), {
-        'image' : img,
-        'pt3d_68' : points,
-        'roi' : roi
+    batch = Batch.from_data_with_categories(
+        Metadata(_imagesize = S, batchsize=0), {
+        'image' : (img,dtr.FieldCategory.image),
+        'pt3d_68' : (points,dtr.FieldCategory.points),
+        'roi' : (roi,dtr.FieldCategory.roi)
     })
-    return TestData(S, R, batch, 0.01)
+    return _TestData(S, R, batch, 0.01)
 
 
-def check(td : TestData, image, points):
+def check(td : _TestData, image, points):
     """Check if heatmap and points match."""
     hm = image[None,...]
     assert hm.shape == (1,len(points),td.R,td.R)
@@ -118,7 +131,7 @@ def vis(td, image, points):
         fig, ax = pyplot.subplots(1,1)
         extent = [0.,td.R,td.R,0.]
         img = ax.imshow(
-            dtr._ensure_image_nhwc(image).mean(dim=-1), 
+            dtr.tensors.ensure_image_nhwc(image).mean(dim=-1), 
             interpolation='nearest',
             vmin=0.,
             extent=extent)
@@ -140,7 +153,7 @@ up_down_sample_configs = [
 @pytest.mark.parametrize('scaling_way, filter_args, tol', up_down_sample_configs)
 def test_scalingtrafo(scaling_way, filter_args, tol):
     td = make_test_data(scaling_way)
-    augmentation = dtr.RandomFocusRoi(new_size = td.R)
+    augmentation = dtr.batch.RandomFocusRoi(new_size = td.R)
     augmentation.make_randomization_parameters = partial(no_randomization, filter_args=filter_args)
     td = td._replace(tol = td.tol + tol)
     result = augmentation(td.batch)
@@ -151,7 +164,7 @@ def test_scalingtrafo(scaling_way, filter_args, tol):
 @pytest.mark.parametrize('scaling_way, filter_args, tol', up_down_sample_configs)
 def test_scalingtrafo_with_randomizer(scaling_way, filter_args, tol):
     td = make_test_data(scaling_way)
-    augmentation = dtr.RandomFocusRoi(new_size = td.R)
+    augmentation = dtr.batch.RandomFocusRoi(new_size = td.R)
     augmentation.make_randomization_parameters = partial(with_some_similarity_trafo, filter_args=filter_args)
     result = augmentation(td.batch)
     td = td._replace(tol = td.tol + tol + (0.2 if scaling_way=='down' else 0.5))

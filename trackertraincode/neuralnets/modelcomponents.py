@@ -7,6 +7,8 @@ import torch
 import torch.nn as nn
 import torch.nn.init
 from torch import Tensor
+import sklearn.mixture
+import h5py
 
 from kornia.filters.kernels import get_pascal_kernel_2d
 from kornia.filters.blur_pool import _blur_pool_by_kernel2d
@@ -247,6 +249,79 @@ def _test_local_to_global_transform_offset():
     print ((r.inv()*pred_r).magnitude())
     print (pred_c, expect_c, expect_scale)
 
+
+class GaussianMixture(nn.Module):
+    def __init__(self, weights : Tensor, means : Tensor, cov=Tensor):
+        """Initialize
+
+        Args:
+            weights: Mixture weights. Shape (N)
+            means: Mean values. Shape (N,D)
+            cov: Covariances. Shape (N,D) for diagonal matrix. Full matrix is not supported.
+        """
+        super().__init__()
+        assert weights.shape == means.shape[:1] == cov.shape[:1]
+        assert means.shape == cov.shape
+        # Cov is only stored for IO and kept on the CPU.
+        self.cov = cov
+        self.register_buffer("weights", weights)
+        self.register_buffer("means", means)
+        self.register_buffer("scales_inv", cov.rsqrt())
+        D = means.shape[-1]
+        self.register_buffer("norm_constant", torch.tensor(0.5*D*np.log(2*np.pi), dtype=weights.dtype))
+
+    @property
+    def n_components(self) -> int:
+        return self.weights.shape[0]
+
+    @staticmethod
+    def from_sklearn(gmm : sklearn.mixture.GaussianMixture) -> 'GaussianMixture':
+        return GaussianMixture(
+            weights = torch.from_numpy(gmm.weights_),
+            means = torch.from_numpy(gmm.means_),
+            cov = torch.from_numpy(gmm.covariances_)
+        )
+
+    @staticmethod
+    def from_hdf5(f : h5py.Group | str) -> 'GaussianMixture':
+        if isinstance(f, str):
+            with h5py.File(f,'r') as file:
+                return GaussianMixture.from_hdf5(file)
+        else:
+            assert f.attrs['covariance_type'] == 'diag'
+            return GaussianMixture(
+                weights = torch.from_numpy(f['weights'][...]),
+                means = torch.from_numpy(f['means'][...]),
+                cov = torch.from_numpy(f['cov'][...])
+            )
+
+    def save_to_hdf5(self, f : h5py.Group, group_name : str | None) -> h5py.Group:
+        '''Save the parameters.
+
+        Returns:
+            The created group.
+        '''
+        g = f.create_group(group_name) if group_name is not None else f
+        g.create_dataset('weights', data=self.weights.cpu().numpy())
+        g.create_dataset('means', data=self.means.cpu().numpy())
+        g.create_dataset('cov', data=self.cov.cpu().numpy())
+        g.attrs['covariance_type'] = 'diag'
+        return g
+
+
+    def forward(self, x : Tensor):
+        """Evaluate the log likelihood.
+        
+        Args:
+            x: Shape (...,D)
+        """
+        # Adds the component dimension to x.
+        delta : Tensor = x[...,None,:] - self.means
+        scales_inv : Tensor = self.scales_inv
+        weight_term = torch.log(self.weights)
+        exponential_term = -0.5*(delta * scales_inv).square().sum(dim=-1)
+        normalization_term = torch.log(scales_inv).sum(dim=-1) - self.norm_constant
+        return torch.logsumexp(weight_term + exponential_term + normalization_term,dim=-1)
 
 
 if __name__ == '__main__':

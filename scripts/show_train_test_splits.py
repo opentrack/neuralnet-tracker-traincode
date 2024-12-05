@@ -7,7 +7,6 @@ import itertools
 import argparse
 
 import trackertraincode.vis as vis
-
 import trackertraincode.pipelines
 import trackertraincode.datatransformation as dtr
 from trackertraincode.datasets.batch import Batch, Metadata
@@ -21,11 +20,10 @@ def visualize(loader, loader_outputs_list_of_batches=False):
     def iterate_predictions():
         the_iter = itertools.chain.from_iterable(loader) if loader_outputs_list_of_batches else loader
         for subset in the_iter:
-            print(subset.meta.tag)
             subset = subset.to('cpu')
-            subset['image'] = trackertraincode.pipelines.unwhiten_image(subset['image'])
-            subset = dtr.unnormalize_batch(subset)
-            subset = dtr.to_numpy(subset)
+            subset['image'] = dtr.tensors.unwhiten_image(subset['image'])
+            subset = dtr.batch.unnormalize_batch(subset)
+            subset = dtr.batch.to_numpy(subset)
             yield from subset.iter_frames()
 
     def drawfunc(sample):

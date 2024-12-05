@@ -4,9 +4,9 @@ OpenTrack "NeuralNet Tracker" Training & Evaluation
 / [**"OpNet: On the power of data augmentation for head pose estimation"**](https://arxiv.org/abs/2407.05357)
 
 If you are looking for the code for the publication please note the [`paper` branch](https://github.com/opentrack/neuralnet-tracker-traincode/tree/paper),
-which is a special tailored snapshot for the publication.
+which is a special tailored snapshot for the publication. The model checkpoints from that branch are no longer compatible with the current code. However, the onnx models can still be used.
 
-This repository contains the code to train the neural nets for the  NeuralNet tracker plugin of [Opentrack](https://github.com/opentrack/opentrack). It allows head tracking with a simple webcam.
+This repository contains the code to train the neural nets for the NeuralNet tracker plugin of [Opentrack](https://github.com/opentrack/opentrack). It allows head tracking with a simple webcam.
 
 
 Overview

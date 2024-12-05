@@ -21,7 +21,7 @@ from scipy.interpolate import interp1d
 from trackertraincode.datasets.preprocessing import box_iou, imdecode
 from trackertraincode.datasets.preprocessing import imread, rgb2gray, extend_rect, imencode, imrescale, imshape, ImageFormat
 from trackertraincode.neuralnets.affine2d import Affine2d
-from trackertraincode.datatransformation.affinetrafo import transform_roi, transform_points
+from trackertraincode.datatransformation.tensors.affinetrafo import transform_roi, transform_points
 from trackertraincode import vis
 from trackertraincode.datasets.dshdf5pose import create_pose_dataset, FieldCategory
 from dsprocess_wflw import cropped

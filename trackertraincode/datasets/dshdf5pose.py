@@ -154,7 +154,7 @@ default_whitelist = [
 ]
 
 
-def _transfrom_to_pose_sample(sample : List[Tuple[str,np.ndarray]], dataclass : Tag, categories_mapping : Field2Categories):
+def _transfrom_to_pose_sample(sample : List[Tuple[str,torch.Tensor]], dataclass : Tag, categories_mapping : Field2Categories):
     names, values = list(zip(*sample))
     categories = [ categories_mapping[n] for n in names ]
     values = list(map(_change_strange_types, values))
@@ -203,45 +203,6 @@ class Hdf5PoseDataset(TorchHdf5DatasetBase):
         sample = self._add_individual_to_sample(sample, index)
         sample['index'] = torch.tensor(index, dtype=torch.int32)
         return self.transform(sample)
-
-    def load_cluster_uniform_sampling_weights(self):
-        with h5py.File(self.filename, 'r') as f:
-            assert 'cluster-labels' in f
-            labels = np.array(f['cluster-labels'][...]).astype(np.int64)
-        cluster_indices, counts = np.unique(labels, return_counts=True)
-        label2weight = np.full(np.amax(cluster_indices)+1, np.nan, dtype=np.float64)
-        label2weight[cluster_indices] = np.reciprocal(counts.astype(np.float64))
-        weights = label2weight[labels]
-        assert np.all(np.isfinite(weights))
-        return weights
-
-
-# class Hdf5StillPoseVideoDataset(TorchHdf5DatasetBase):
-#     '''
-#     Repeats still images a couple of times ...
-#     This is used as additional dataset to train recurrent networks to hold the output still when the image is not changing.
-#     '''
-#     def __init__(self, filename, sequencelength, frame_transform=None, transform=None, monochrome=True, dataclass : Tag = None, whitelist : Whitelist = None):
-#         super().__init__(
-#             filename, 
-#             monochrome = monochrome)
-#         self.transform = (lambda x: x) if transform is None else transform
-#         self.frame_transform = (lambda x: x) if frame_transform is None else frame_transform
-#         self.sequencelength = sequencelength
-
-#     def __len__(self):
-#         return self.frame_count
-
-#     def __getitem__(self, index):
-#         if index<0 or index >= len(self):
-#             raise IndexError
-#         self._ensure_h5opened()
-#         sample = self._load_sample(index)
-#         out, = batch.Batch.collate([ self.frame_transform(sample) for _ in range(self.sequencelength) ])
-#         out.meta.batchsize = 0
-#         out.meta.seq = (0, self.sequencelength)
-#         out = self.transform(out)
-#         return out
 
 
 class Hdf5PoseVideoDataset(TorchHdf5DatasetBase):
@@ -304,16 +265,3 @@ class Hdf5PoseVideoDataset(TorchHdf5DatasetBase):
         out.meta.seq = [0, b-a]
         out = self.transform(out)
         return out
-
-    def load_cluster_uniform_sampling_weights(self):
-        with h5py.File(self.filename, 'r') as f:
-            assert 'cluster-labels' in f
-            labels = np.array(f['cluster-labels'][...]).astype(np.int64)
-        cluster_indices, counts = np.unique(labels, return_counts=True)
-        assert np.all(cluster_indices == np.arange(len(cluster_indices)))
-        sequence_weights = []
-        for a,b in self.sequences:
-            w = np.average(counts[labels[a:b]])
-            sequence_weights.append(w)
-        sequence_weights = np.reciprocal(np.asarray(sequence_weights).astype(np.float64))
-        return sequence_weights

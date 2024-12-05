@@ -23,6 +23,7 @@ import trackertraincode.neuralnets.torchquaternion as torchquaternion
 from trackertraincode.backbones.mobilenet_v1 import MobileNet
 from trackertraincode.backbones.efficientnet import EfficientNetBackbone
 from trackertraincode.backbones.resnet import resnet18
+from trackertraincode.backbones.hybrid_vit import HybridVitBackbone
 
 
 class LocalizerNet(nn.Module):
@@ -201,17 +202,46 @@ class PositionSizeOutput(nn.Module):
         return out
 
 
-def create_pose_estimator_backbone(config : str, args : Dict[str,Any]):
+def create_pose_estimator_backbone(num_heads, config : str, args : Dict[str,Any]):
     if config == 'mobilenetv1':
         return MobileNet(input_channel=1, num_classes=None, **args)
     elif config == 'resnet18':
         return resnet18(**args)
+    elif config == 'hybrid_vit':
+        if args:
+            print (f"WARNING: backbone arguments to {config} ignored: {args}")
+        return HybridVitBackbone(num_heads=num_heads)
     elif config.startswith('efficientnet_'):
         kind = config[len('efficientnet_'):]
         assert kind in 'b0,b1,b2,b3,b4'.split(',')
         return EfficientNetBackbone(kind=kind, input_channels=1, stochastic_depth_prob=0.1, **args)
     else:
         assert f"Unsupported backbone {config}"
+
+
+class TransformerNeck(nn.Module):
+    def __init__(self, num_heads, args : Dict[str,Any]):
+        super().__init__()
+        self.num_heads = num_heads
+        assert not args, "Has no parameters"
+
+    def forward(self, features : Tensor)  -> tuple[Tensor]:
+        B, N, C = features.shape
+        assert N == self.num_heads
+        return features.unbind(dim=1)
+
+
+class CnnNeck(nn.Module):
+    def __init__(self, num_heads, args : Dict[str,Any]):
+        super().__init__()
+        self.num_heads = num_heads
+        self.dropout_prob = args.get('dropout_prob', 0.5)
+        self.dropout = nn.Dropout(self.dropout_prob) if self.dropout_prob>0. else nn.Identity()
+    
+    def forward(self, features : Tensor) -> tuple[Tensor]:
+        B, C = features.shape
+        return features[:,None,:].expand(-1,self.num_heads,-1).unbind(dim=1)
+
 
 
 class NetworkWithPointHead(nn.Module):
@@ -221,10 +251,13 @@ class NetworkWithPointHead(nn.Module):
             enable_face_detector=False, 
             config='mobilenetv1', 
             enable_uncertainty=False,
-            dropout_prob = 0.5,
+            dropout_prob = None, # For loading old models. Ignored because they all used 0.5.
             use_local_pose_offset = True,
             backbone_args = None):
         super(NetworkWithPointHead, self).__init__()
+        
+        assert dropout_prob is None or dropout_prob in (0.,0.5)
+
         self.enable_point_head = enable_point_head
         self.enable_face_detector = enable_face_detector
         self.finetune = False
@@ -232,11 +265,16 @@ class NetworkWithPointHead(nn.Module):
         self.enable_uncertainty = enable_uncertainty
         self.use_local_pose_offset = use_local_pose_offset
         self._backbone_args = {} if (backbone_args is None) else backbone_args
-        self._input_resolution = (129, 97)
+        self._input_resolution = (129,)
+        num_heads = 3 + (1 if enable_point_head else 0) + (1 if enable_face_detector else 0)
 
-        self.convnet = create_pose_estimator_backbone(config, self._backbone_args)
+        self.convnet = create_pose_estimator_backbone(num_heads, config, self._backbone_args)
         num_features = self.convnet.num_features
-        self.dropout = nn.Dropout(dropout_prob)
+
+        if config == 'hybrid_vit':
+            self.neck = TransformerNeck(num_heads, self._backbone_args)
+        else:
+            self.neck = CnnNeck(num_heads, self._backbone_args)
 
         self.boxnet = BoundingBox(num_features, enable_uncertainty)
         self.posnet = PositionSizeOutput(num_features, enable_uncertainty)
@@ -254,7 +292,6 @@ class NetworkWithPointHead(nn.Module):
             'enable_face_detector' : self.enable_face_detector,
             'config' : self.config,
             'enable_uncertainty' : self.enable_uncertainty,
-            'dropout_prob' : self.dropout.p,
             'use_local_pose_offset' : self.use_local_pose_offset,
             'backbone_args' : self._backbone_args
         }
@@ -276,12 +313,13 @@ class NetworkWithPointHead(nn.Module):
                x.shape[3] == x.shape[2]
 
         x, _ = self.convnet(x)
-        x = self.dropout(x)
+        zs : list[Tensor] = list(self.neck(x))
+        del x
 
-        out : Dict[str,Tensor] = self.boxnet(x)
+        out : Dict[str,Tensor] = self.boxnet(zs.pop())
 
-        out.update(self.posnet(x))
-        out.update(self.quatnet(x))
+        out.update(self.posnet(zs.pop()))
+        out.update(self.quatnet(zs.pop()))
 
         if self.use_local_pose_offset:
             out.update({
@@ -299,10 +337,10 @@ class NetworkWithPointHead(nn.Module):
         if self.enable_point_head:
             if self.use_local_pose_offset:
                 quats, coords = self.local_pose_offset_kpts(out['hidden_pose'], out['hidden_coord'])
-            out.update(self.landmarks(x, quats, coords))
+            out.update(self.landmarks(zs.pop(), quats, coords))
 
         if self.enable_face_detector:
-            hasface_logits = self.face_detector(x).view(x.size(0))
+            hasface_logits = self.face_detector(zs.pop()).view(x.size(0))
             out.update({'hasface_logits' : hasface_logits, 'hasface' : torch.sigmoid(hasface_logits) })
 
         out.pop('hidden_pose', None)
@@ -344,5 +382,6 @@ def load_model(filename : str):
         net.load_state_dict(sd, strict=True)
     try:
         return trackertraincode.neuralnets.io.load_model(filename, [NetworkWithPointHead])
-    except trackertraincode.neuralnets.io.InvalidFileFormatError:
+    except trackertraincode.neuralnets.io.InvalidFileFormatError as e:
+        print (f"Failed to load model because: {str(e)}. Will attempt to load legacy config")
         return load_legacy(filename)

@@ -18,7 +18,7 @@ import tqdm
 import tempfile
 
 from trackertraincode.neuralnets.affine2d import Affine2d
-from trackertraincode.datatransformation.affinetrafo import transform_roi, transform_keypoints
+from trackertraincode.datatransformation.tensors.affinetrafo import transform_roi, transform_keypoints
 from scripts.dsprocess_wflw import cropped
 from trackertraincode.datasets.preprocessing import imencode, box_iou
 from trackertraincode.datasets.dshdf5pose import create_pose_dataset, FieldCategory

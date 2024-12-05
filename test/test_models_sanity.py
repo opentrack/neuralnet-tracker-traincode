@@ -45,7 +45,7 @@ def onnx_export_and_inference_speed(net):
 
 def test_pose_network_sanity(tmp_path):
     torch.set_num_threads(1)
-    net = trackertraincode.neuralnets.models.NetworkWithPointHead(config='mobilenetv1', enable_uncertainty=True)
+    net = trackertraincode.neuralnets.models.NetworkWithPointHead(config='resnet18', enable_uncertainty=True)
     net.eval()
     
     timing_and_output(net, torch.rand(1, 1, net.input_resolution, net.input_resolution))

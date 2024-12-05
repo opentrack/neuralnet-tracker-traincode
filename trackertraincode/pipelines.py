@@ -18,7 +18,7 @@ from torchvision import transforms
 import torch
 
 from trackertraincode.datasets.batch import Batch, Tag
-from trackertraincode.datasets.dshdf5pose import Hdf5PoseDataset, FieldCategory
+from trackertraincode.datasets.dshdf5pose import Hdf5PoseDataset
 from trackertraincode.datasets.randomized import make_concat_dataset_item_sampler
 import trackertraincode.datatransformation as dtr
 import trackertraincode.utils as utils
@@ -63,23 +63,6 @@ def seed_worker(worker_id):
     # Also set numpy number of threads
     import mkl
     mkl.set_num_threads(1)
-
-
-# For now this shall be good enough.
-def whiten_image(image : torch.Tensor):
-    return image.sub(0.5)
-
-
-def unwhiten_image(image : torch.Tensor):
-    return image.add(0.5)
-
-
-def whiten_batch(batch : Batch):
-    batch = copy(batch)
-    for k,v in batch.items():
-        if dtr.get_category(batch, k) == FieldCategory.image:
-            batch[k] = whiten_image(v)
-    return batch
 
 
 def make_biwi_datasest(transform=None):
@@ -225,8 +208,8 @@ def _make_roi_augmentations(inputsize : int, stage : str, mode : str, rotation_a
         'landmarks' : 1.2
     }[mode]
     cropping_aug = {
-        'eval': dtr.FocusRoi(inputsize, extension_factor),
-        'train':  dtr.RandomFocusRoi(inputsize, rotation_aug_angle=rotation_aug_angle, extension_factor=extension_factor)
+        'eval': dtr.batch.FocusRoi(inputsize, extension_factor),
+        'train':  dtr.batch.RandomFocusRoi(inputsize, rotation_aug_angle=rotation_aug_angle, extension_factor=extension_factor)
     }[stage]
 
     if mode == 'original':
@@ -234,13 +217,13 @@ def _make_roi_augmentations(inputsize : int, stage : str, mode : str, rotation_a
         return [ cropping_aug ]
     elif mode == 'landmarks':
         return [
-            dtr.PutRoiFromLandmarks(extend_to_forehead=False),
+            dtr.batch.PutRoiFromLandmarks(extend_to_forehead=False),
             cropping_aug,
-            dtr.PutRoiFromLandmarks(extend_to_forehead=False)
+            dtr.batch.PutRoiFromLandmarks(extend_to_forehead=False)
         ]
     else:
         return [
-            dtr.PutRoiFromLandmarks(extend_to_forehead=True),
+            dtr.batch.PutRoiFromLandmarks(extend_to_forehead=True),
             cropping_aug
             # Forgot to regenerate the bounding box
         ]
@@ -254,23 +237,22 @@ def make_pose_estimation_loaders(
         use_weights_as_sampling_frequency : bool = True,
         enable_image_aug : bool = True,
         rotation_aug_angle : float = 30.,
-        roi_override : str = True,
+        roi_override : str = 'original',
         device : Optional[str] = 'cuda',
     ):
     C = transforms.Compose
 
     prepare = [
-        dtr.batch_to_torch_nchw,
-        dtr.offset_points_by_half_pixel, # For when pixels are considered cell centered
+        dtr.batch.offset_points_by_half_pixel, # For when pixels are considered cell centered
     ]
 
     headpose_train_trafo = prepare + _make_roi_augmentations(inputsize, 'train', roi_override, rotation_aug_angle) + [
-        partial(dtr.horizontal_flip_and_rot_90, 0.01),
-        partial(dtr.normalize_batch),
+        partial(dtr.batch.horizontal_flip_and_rot_90, 0.01),
+        partial(dtr.batch.normalize_batch),
     ]
 
     headpose_test_trafo = prepare + _make_roi_augmentations(inputsize, 'eval', roi_override) + [
-        partial(dtr.normalize_batch)
+        partial(dtr.batch.normalize_batch)
     ]
 
 
@@ -368,57 +350,60 @@ def make_pose_estimation_loaders(
         dataset = ds_train,
         weights = train_sets_frequencies)
 
-    loader_trafo_test = [ whiten_batch ]
+    loader_trafo_test = [ dtr.batch.whiten_batch ]
     if device is not None:
-        loader_trafo_test = [ lambda b: b.to('cuda') ] + loader_trafo_test
+        loader_trafo_test = [ lambda b: b.to(device) ] + loader_trafo_test
 
     if enable_image_aug:
         image_augs = [
-            dtr.KorniaImageDistortions(
-                dtr.RandomEqualize(p=0.2),
-                dtr.RandomPosterize((4.,6.), p=0.01),
-                dtr.RandomGamma((0.5, 2.0), p = 0.2),
-                dtr.RandomContrast((0.7, 1.5), p = 0.2),
-                dtr.RandomBrightness((0.7, 1.5), p = 0.2),
-                dtr.RandomGaussianBlur(p=0.1, kernel_size=(5,5), sigma=(1.5,1.5)),
+            dtr.batch.KorniaImageDistortions(
+                dtr.batch.RandomEqualize(p=0.2),
+                dtr.batch.RandomPosterize((4.,6.), p=0.01),
+                dtr.batch.RandomGamma((0.5, 2.0), p = 0.2),
+                dtr.batch.RandomContrast((0.7, 1.5), p = 0.2),
+                dtr.batch.RandomBrightness((0.7, 1.5), p = 0.2),
+                dtr.batch.RandomGaussianBlur(p=0.1, kernel_size=(5,5), sigma=(1.5,1.5), silence_instantiation_warning=True),
                 random_apply = 4),
-            dtr.KorniaImageDistortions(
-                dtr.RandomGaussianNoise(std=4./255., p=0.5),
-                dtr.RandomGaussianNoise(std=16./255., p=0.1),
+            dtr.batch.KorniaImageDistortions(
+                dtr.batch.RandomGaussianNoise(std=4./255., p=0.5),
+                dtr.batch.RandomGaussianNoise(std=16./255., p=0.1),
             )
         ]
     else:
         image_augs = []
-    loader_trafo_train = [ lambda b: b.to('cuda') ] if device is not None else []
-    loader_trafo_train += image_augs + [ whiten_batch ]
+    loader_trafo_train = [ lambda b: b.to(device) ] if device is not None else []
+    loader_trafo_train += image_augs + [ dtr.batch.whiten_batch ]
     
 
-    train_loader = dtr.PostprocessingDataLoader(ds_train,
-                            unroll_list_of_batches = False,
+    train_loader = dtr.SegmentedCollationDataLoader(ds_train,
                             batch_size = batchsize,
                             sampler = train_sampler,
                             num_workers = utils.num_workers(),
                             postprocess = transforms.Compose(loader_trafo_train),
-                            collate_fn = Batch.Collation(divide_by_tag=True),
+                            segmentation_key_getter=lambda b: b.meta.tag,
                             worker_init_fn = seed_worker,
                             pin_memory = True)
-    test_loader = dtr.PostprocessingDataLoader(ds_test,
-                            unroll_list_of_batches = True,
+    test_loader = dtr.PostprocessingLoader[Batch](ds_test,
                             batch_size = batchsize*2,
                             num_workers = utils.num_workers(),
-                            collate_fn = Batch.Collation(divide_by_tag=True),
                             postprocess = transforms.Compose(loader_trafo_test),
+                            collate_fn = Batch.collate,
                             pin_memory = True,
                             worker_init_fn = seed_worker)
 
     return train_loader, test_loader, len(ds_train)
 
 
-def make_validation_loader(name, order = None, use_head_roi = True, num_workers=None, batch_size = 32):
+def make_validation_dataset(name : str, 
+                            order : Sequence[int] |None = None, 
+                            use_head_roi = True, 
+                            additional_transforms : list[Any] | None = None) -> Hdf5PoseDataset | Subset:
+    if additional_transforms is None:
+        additional_transforms = []
     test_trafo = transforms.Compose([
-        dtr.offset_points_by_half_pixel, # For when pixels are considered grid cell centers
-        dtr.PutRoiFromLandmarks(extend_to_forehead=use_head_roi)
-    ])
+        dtr.batch.offset_points_by_half_pixel, # For when pixels are considered grid cell centers
+        dtr.batch.PutRoiFromLandmarks(extend_to_forehead=use_head_roi)
+    ] + additional_transforms)
     if name == 'aflw2k3d':
         ds = make_aflw2k3d_dataset(transform=test_trafo)
     elif name == 'aflw2k3d_grimaces':
@@ -442,14 +427,28 @@ def make_validation_loader(name, order = None, use_head_roi = True, num_workers=
 
     if order is not None:
         ds = Subset(ds, order)
-    if num_workers is None:
-        num_workers = utils.num_workers()
+    return ds
 
-    return dtr.PostprocessingDataLoader(
-        ds, 
-        batch_size=batch_size,
-        shuffle=False, 
-        num_workers = num_workers,
-        postprocess = None, 
-        collate_fn = lambda samples: samples,
-        unroll_list_of_batches = True)
+
+def make_validation_loader(name, 
+                           order : Sequence[int] |None = None, 
+                           use_head_roi = True, 
+                           return_single_samples : bool = False,
+                           additional_sample_transform : Any | None = None,
+                           additional_batch_transform : Any | None = None):
+    if isinstance (additional_sample_transform, transforms.Compose):
+        additional_sample_transform = list(additional_sample_transform.transforms)
+    ds = make_validation_dataset(name, order, use_head_roi, additional_transforms=additional_sample_transform)
+    num_workers = utils.num_workers()
+    if return_single_samples:
+        return dtr.SampleBySampleLoader[Batch](
+            ds, num_workers = num_workers, postprocess=additional_batch_transform)
+    elif additional_batch_transform:
+        return dtr.PostprocessingLoader[Batch](
+            ds, num_workers = num_workers, postprocess=additional_batch_transform, collate_fn = Batch.collate)
+    else:
+        return dtr.DataLoader(
+            ds, 
+            num_workers = utils.num_workers(),
+            batch_size = 128,
+            collate_fn = Batch.collate)

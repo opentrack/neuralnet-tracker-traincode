@@ -25,8 +25,8 @@ def test_landmarks():
     ds = Hdf5PoseDataset(
         join(dirname(__file__),'..','aflw2kmini.h5'),
         transform = Compose([
-            dtr.offset_points_by_half_pixel,
-            partial(dtr.normalize_batch)
+            dtr.batch.offset_points_by_half_pixel,
+            dtr.batch.normalize_batch
         ]))
     batch = Batch.collate([smpl for smpl in ds])
     with torch.no_grad():

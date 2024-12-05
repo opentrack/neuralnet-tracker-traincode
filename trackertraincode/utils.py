@@ -70,13 +70,6 @@ def inv_aflw_rotation_conversion(rot : Rotation):
     return euler
 
 
-def angle_errors(euler1, euler2):
-    v1 = np.concatenate([np.cos(euler1)[...,None],np.sin(euler1)[...,None]],axis=-1)
-    v2 = np.concatenate([np.cos(euler2)[...,None],np.sin(euler2)[...,None]],axis=-1)
-    angles = np.arccos(np.sum(v1*v2, axis=-1))
-    return angles
-
-
 def affine3d_chain(Ta, Tb):
     Ra, ta = Ta
     Rb, tb = Tb

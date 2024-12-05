@@ -7,7 +7,7 @@ from matplotlib.widgets import Button
 from typing import Tuple, Union, Optional
 
 from trackertraincode.datasets.batch import Batch
-from trackertraincode.datatransformation import _ensure_image_nhwc
+from trackertraincode.datatransformation.tensors.representation import ensure_image_nhwc
 
 
 PRED_COLOR=(0,0,255)
@@ -15,7 +15,7 @@ GT_COLOR=(0,200,0)
 
 def _with3channels_hwc(img : np.ndarray):
     assert len(img.shape) == 3
-    img = _ensure_image_nhwc(img)
+    img = ensure_image_nhwc(img)
     if img.shape[-1]==1:
         img = np.tile(img,(1,1,3))
     return img

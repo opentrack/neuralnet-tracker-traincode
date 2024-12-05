@@ -1,16 +1,11 @@
-import numpy as np
-from copy import copy
-from typing import Callable, Set, Sequence, Union, List, Tuple, Dict, Optional, NamedTuple
-
+from typing import Callable, Generator, Any, Generic, TypeVar
 from torch.utils.data import Dataset, DataLoader
-from torch.utils.data._utils.collate import default_collate
 
-import trackertraincode.utils as utils
-from trackertraincode.datasets.batch import Batch, Tag
+from trackertraincode.datasets.batch import Batch
 
 
-class TransformedDataset(Dataset):
-    def __init__(self, wrapped, transform):
+class TransformedDataset(Dataset[Batch]):
+    def __init__(self, wrapped : Dataset[Batch], transform : Callable[[Batch],Batch]):
         super(TransformedDataset, self).__init__()
         self.transform = transform
         self.wrapped = wrapped
@@ -18,103 +13,99 @@ class TransformedDataset(Dataset):
     def __len__(self):
         return len(self.wrapped)
 
-    def __iter__(self):
+    def __iter__(self) -> Generator[Batch,Any,None]:
         for x in self.wrapped:
             yield self.transform(x)
 
-    def __getitem__(self, key):
+    def __getitem__(self, key) -> Batch:
         return self.transform(self.wrapped[key])
 
 
-class PostprocessingDataLoader(DataLoader):
-    def __init__(self, *args, **kwargs):
-        kwargs.setdefault('unroll_list_of_batches', True)
-        kwargs.setdefault('collate_fn', collate_list_of_batches)
-        self.postprocess = kwargs.pop('postprocess', None)
-        if self.postprocess is None:
-            self.postprocess = utils.identity
-        self._iter = self._iteration_with_lists_unrolled \
-            if kwargs.pop('unroll_list_of_batches') else \
-                self._iteration_over_list_of_batches
-        super(PostprocessingDataLoader, self).__init__(*args, **kwargs)
+class SegmentedCollationDataLoader:
+    def __init__(self,
+                 dataset : Dataset[Batch],
+                 *,
+                            batch_size : int,
+                            num_workers : int,
+                            segmentation_key_getter : Callable[[Batch],Any],
+                            pin_memory : bool,
+                            sampler = None,
+                            worker_init_fn = None,
+                            postprocess : Callable[[Batch],Batch] = lambda x: x):
+        self._loader = DataLoader(
+            dataset = dataset,
+            batch_size = batch_size,
+            sampler = sampler,
+            num_workers = num_workers,
+            collate_fn=Batch.Collation(segmentation_key_getter),
+            worker_init_fn=worker_init_fn,
+            pin_memory=pin_memory
+        )
+        self._postprocess = postprocess
     
-    def _iteration_with_lists_unrolled(self):
-        for items in super(PostprocessingDataLoader, self).__iter__():
-            if not isinstance(items, list):
-                items = [ items ]
-            yield from map(self.postprocess, items)
+    def __iter__(self) -> Generator[list[Batch],Any,None]:
+        for items in self._loader:
+            assert isinstance(items, list)
+            yield [ self._postprocess(item) for item in items ]
+    
+    def iter_unrolled(self) -> Generator[Batch,Any,None]:
+        for items in self:
+            yield from items
 
-    def _iteration_over_list_of_batches(self):
-        for itemlist in super(PostprocessingDataLoader, self).__iter__():
-            itemlist = [ self.postprocess(item) for item in itemlist ]
-            yield itemlist
+    def __len__(self):
+        return len(self._loader)
+
+T_co = TypeVar("T_co", covariant=True)
+
+
+class PostprocessingLoader(Generic[T_co]):
+    def __init__(self, *args, **kwargs):
+        self._postprocess = kwargs.pop('postprocess', None) or (lambda x: x)
+        self._loader = DataLoader[T_co](*args, **kwargs)
+
+    @property
+    def dataset(self) -> Dataset:
+        return self._loader.dataset
 
     def __iter__(self):
-        yield from self._iter()
+        for items in self._loader:
+            yield self._postprocess(items)
+
+    def __len__(self):
+        return len(self._loader)
 
 
-class ComposeChoiceByTag(object):
-    def __init__(self, tag2aug : Dict[Tag, Callable]):
-        self.tag2aug = tag2aug
-    def __call__(self, batch : Batch):
-        try:
-            aug = self.tag2aug[batch.meta.tag]
-        except KeyError:
-            return batch
-        return aug(batch)
+class SampleBySampleLoader(Generic[T_co]):
+    def __init__(self,
+                 dataset : Dataset[T_co],
+                 *,
+                            num_workers : int,
+                            pin_memory : bool = False,
+                            shuffle = False,
+                            sampler = None,
+                            worker_init_fn = None,
+                            postprocess : Callable[[T_co],T_co] | None = None):
+        self._loader = DataLoader(
+            dataset = dataset,
+            batch_size = max(1,num_workers),
+            sampler = sampler,
+            num_workers = num_workers,
+            collate_fn=lambda items: items,
+            worker_init_fn=worker_init_fn,
+            pin_memory=pin_memory,
+            shuffle = shuffle,
+            drop_last = False,
+        )
+        self._postprocess = postprocess or (lambda x: x)
 
+    @property
+    def dataset(self) -> Dataset:
+        return self._loader.dataset
 
-class ComposeChoice(object):
-    def __init__(self, *augs):
-        self.augs = augs
-    def __call__(self, batch : Batch):
-        i = np.random.randint(len(self.augs))
-        return self.augs[i](batch)
-
-
-
-def collate_list_of_batches(samples):
-    def pack(list_or_sample):
-        return list_or_sample if isinstance(list_or_sample, list) else [ list_or_sample ]
-    items = sum((pack(s) for s in samples), [])
-    first = next(iter(items))
-    if hasattr(type(first), 'collate'):
-        return type(first).collate(items)
-    else:
-        return default_collate(items)
-
-
-def undo_collate(batch):
-    """
-        Generator that takes apart a batch. Opposite of collate_fn.
-    """
-    if hasattr(type(batch), 'undo_collate'):
-        yield from type(batch).undo_collate(batch)
-    else:
-        assert isinstance(batch, dict), f"Got {type(batch)}"
-        keys = [*batch.keys()]
-        assert keys
-        N = batch[keys[0]].shape[0]  # First dimension should be the batch size
-        for i in range(N):
-            yield { k:batch[k][i] for k in keys }
-
-
-class DeleteKeys(object):
-    def __init__(self, *keys):
-        self.keys = keys
-
-    def __call__(self, sample):
-        for k in self.keys:
-            del sample[k]
-        return sample
-
-
-class WhitelistKeys(object):
-    def __init__(self, *keys):
-        self.keys = frozenset(keys)
-
-    def __call__(self, sample):
-        for k in list(sample.keys()):
-            if not k in self.keys:
-                del sample[k]
-        return sample
+    def __iter__(self) -> Generator[T_co,Any,None]:
+        for items in self._loader:
+            assert isinstance(items, list)
+            yield from (self._postprocess(item) for item in items)
+    
+    def __len__(self):
+        return len(self._loader.dataset)

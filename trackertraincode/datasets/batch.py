@@ -1,6 +1,6 @@
 import torch
-from dataclasses import dataclass, field, fields
-from typing import Union, Tuple, Dict, Any, Optional, List, Iterator, DefaultDict, Set
+from dataclasses import dataclass, field
+from typing import Union, Tuple, Dict, Any, Optional, List, Iterator, Callable
 import numpy as np
 import enum
 import copy
@@ -51,7 +51,15 @@ class Batch:
 
     def __init__(self, meta : Metadata, *data, **kwargs):
         self.meta : Metadata = meta
-        self._data = dict(*data, **kwargs)
+        self._data : dict[str,TensorOrArray] = dict(*data, **kwargs)
+
+    @staticmethod
+    def from_data_with_categories(meta : Metadata, *args, **kwargs):
+        """Create Batch taking arguments which would create a dict with (tensor,category) values."""
+        with_categories = dict(*args, **kwargs)
+        meta = copy.copy(meta)
+        meta.categories.update(((k,c) for k,(_,c) in with_categories.items()))
+        return Batch(meta, ((k,v) for k,(v,_) in with_categories.items()))
 
     @property
     def device(self):
@@ -85,6 +93,10 @@ class Batch:
     def __str__(self):
         seq_str = f',N={self.meta.seq[-1][-1]}' if self.meta.seq is not None else ''
         return f"Batch({self.meta.tag},B={self.meta.batchsize}{seq_str})"
+
+    def get_category(self, k, default = None) -> Any | None:
+        assert k in self._data
+        return self.meta.categories.get(k,default)
 
     def with_batchdim(self) -> "Batch":
         """
@@ -152,91 +164,69 @@ class Batch:
 
 
     class Collation(object):
-        def __init__(self, divide_by_tag : bool = True, divide_by_image_size : bool = False, ragged_categories : Optional[Set[Any]] = None):
-            assert not divide_by_image_size or ragged_categories is None
-            get_key_for_divide_by_size_and_tag = lambda b: (b.meta.image_wh, b.meta.tag)
-            get_key_for_divide_by_size = lambda b: b.meta.image_wh
-            get_key_for_divide_by_tag = lambda b: b.meta.tag
-            get_key_for_no_divide = lambda b: True
-            self._get_division_key = {
-                (True, True) : get_key_for_divide_by_size_and_tag,
-                (False, True) : get_key_for_divide_by_size,
-                (True, False): get_key_for_divide_by_tag,
-                (False,False) : get_key_for_no_divide
-            }[divide_by_tag, divide_by_image_size]
-            self._expect_single_item = not (divide_by_tag or divide_by_image_size)
-            self._ragged_categories = ragged_categories if ragged_categories is not None else frozenset()
+        def __init__(self, key_getter : Callable[["Batch"],Any] | None = None):
+            self._key_getter = key_getter if key_getter is not None else (lambda b: True)
+            self._divide_samples = key_getter is not None
 
 
-        def __call__(self, samples : List["Batch"]) -> List["Batch"]:
+        def __call__(self, samples : List["Batch"]) -> List["Batch"] | "Batch":
             '''
             Concatenates the input into one big batch
             '''
             divisions = defaultdict(list)
             for item in samples:
                 assert isinstance(item, Batch), f"Expected list of Batch types. Got {type(item)}"
-                divisions[self._get_division_key(item)].append(item)
+                divisions[self._key_getter(item)].append(item)
             batches = list(map(self._collate_single_class, divisions.values()))
-            if self._expect_single_item:
-                batches, = batches # Unpack single item. If different tags and divide_by_tag is false then it's user error.
+            if not self._divide_samples:
+                batches, = batches
             return batches
 
 
         def _collate_single_class(self, samples : List["Batch"]) -> "Batch":
-            if self._ragged_categories:
-                assert len(frozenset(s.meta.image_wh for s in samples))==1, f"Image size mismatch in batch: {frozenset(s.meta.image_wh for s in samples)}"
+            # TODO: assert they are all equal in kind (sequence or frame or batch)
             first = next(iter(samples))
             return self._collate_stills(samples, first) if first.meta.seq is None \
                 else self._collate_videos(samples, first)
-
-
-        def _combine_samples(self, samples : List["Batch"], first : "Batch") -> Dict:
-            assert all(s.meta.prefixshape != () for s in samples)
-            combined_data = {}
-            for k in first.keys():
-                assert isinstance(first[k], (torch.Tensor, np.ndarray)), "Only tensor and ndarray is supported for now"
-                if first.meta.categories.get(k,None) in self._ragged_categories:
-                    combined_data[k] = [s[k] for s in samples]
-                else:                
-                    concat = Batch._concat_func[type(first[k])]            
-                    combined_data[k] = concat((s[k] for s in samples))
-            return combined_data
 
 
         def _collate_videos(self, samples : List["Batch"], first : "Batch") -> "Batch":
             '''
             Concatenates along the batch dimension
             '''
-            # TODO: assert they are all equal
-            combined_data = self._combine_samples(samples, first)
-            lengths = np.asarray([0] + [s.meta.seq[-1] for s in samples])
-            # Shift the sequence starts to account for them now starting one after another.
-            offsets = np.cumsum(lengths)[:-1]
-            seq = np.concatenate([ np.zeros((1,),dtype=np.int32) ] + [ np.asarray(s.meta.seq[1:])+o for s,o in zip(samples,offsets) ]).tolist()
-            # Adjust metadata
-            meta = copy.copy(first.meta)
-            meta.batchsize = len(seq)-1
-            meta.seq = seq
-            if self._ragged_categories:
-                meta._imagesize = 0 # TODO: proper handling of ragged images
+            # TODO: assert the samples are all equal
             return Batch(
-                meta,
-                combined_data.items())
+                self._combine_metadata(samples, first),
+                self._combine_samples(samples, first).items())
 
 
         def _collate_stills(self, samples : List["Batch"], first : "Batch") -> "Batch":
-            # Warning: default_collate converts to tensors. So I'm not using it.
-            # TODO: assert they are all equal
-            samples_as_batches = [ s.with_batchdim() for s in samples ]
-            combined_data = self._combine_samples(samples_as_batches, first)
-            # Adjust metadata
-            meta = copy.copy(first.meta)
-            meta.batchsize = sum(s.meta.batchsize for s in samples_as_batches)
-            if self._ragged_categories:
-                meta._imagesize = 0 # TODO: proper handling of ragged images
             return Batch(
-                meta,
-                combined_data.items())
+                self._combine_metadata(samples, first),
+                self._combine_samples([ s.with_batchdim() for s in samples ], first))
 
 
-    collate = Collation(divide_by_tag=False)
+        def _combine_metadata(self, samples : List["Batch"], first : "Batch") -> Metadata:
+            meta = copy.copy(first.meta)
+            if first.meta.seq is None:
+                meta.batchsize = sum(max(s.meta.batchsize,1) for s in samples)
+            else:
+                lengths = np.asarray([0] + [s.meta.seq[-1] for s in samples])
+                # Shift the sequence starts to account for them now starting one after another.
+                offsets = np.cumsum(lengths)[:-1]
+                seq = np.concatenate([ np.zeros((1,),dtype=np.int32) ] + [ np.asarray(s.meta.seq[1:])+o for s,o in zip(samples,offsets) ]).tolist()
+                # Adjust metadata
+                meta = copy.copy(first.meta)
+                meta.batchsize = len(seq)-1
+                meta.seq = seq
+            return meta
+
+        def _combine_samples(self, samples : List["Batch"], first : "Batch") -> dict[str,TensorOrArray]:
+            assert all(s.meta.prefixshape != () for s in samples)
+            combined_data = {}
+            for k in first.keys():
+                concat = Batch._concat_func[type(first[k])]
+                combined_data[k] = concat([s[k] for s in samples])
+            return combined_data
+
+    collate = Collation()

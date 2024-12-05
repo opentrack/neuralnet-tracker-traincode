@@ -157,7 +157,7 @@ def _quantize(values : np.ndarray):
     minval = np.amin(values, keepdims=True)
     maxval = np.amax(values, keepdims=True)
     buffer = ((values-minval)/(maxval-minval+1.)*256).astype(np.uint8)
-    return minval, maxval, buffer
+    return np.squeeze(minval), np.squeeze(maxval), buffer
 
 
 def _dequantize(minval, maxval, buffer, shape):

@@ -19,7 +19,7 @@ from PIL import Image
 from trackertraincode.datasets.dshdf5pose import Hdf5PoseDataset
 from trackertraincode.datasets.preprocessing import imread, rgb2gray, extend_rect, imencode, imrescale, imshape
 from trackertraincode.neuralnets.affine2d import Affine2d
-from trackertraincode.datatransformation.affinetrafo import transform_roi, transform_points
+from trackertraincode.datatransformation.tensors.affinetrafo import transform_roi, transform_points
 from trackertraincode.datasets.dshdf5pose import create_pose_dataset, FieldCategory
 
 C = FieldCategory

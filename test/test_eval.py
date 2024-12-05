@@ -92,11 +92,11 @@ def test_perspective_corrector(fov, image_size, coord, pose, expected):
 
 
 def test_make_look_at_matrix():
-    m = PerspectiveCorrector.make_look_at_matrix(torch.as_tensor([0.,0.,1.])).numpy()
+    m = PerspectiveCorrector._make_look_at_matrix(torch.as_tensor([0.,0.,1.])).numpy()
     np.testing.assert_allclose(m, np.eye(3))
 
     SQRT3 = math.sqrt(3.)
-    m = PerspectiveCorrector.make_look_at_matrix(torch.as_tensor([1.,1.,1.])).numpy()
+    m = PerspectiveCorrector._make_look_at_matrix(torch.as_tensor([1.,1.,1.])).numpy()
     np.testing.assert_allclose(m[:,2], np.asarray([1./SQRT3,1./SQRT3,1./SQRT3]))
     assert np.abs(np.dot(m[:,0],np.asarray([0.,1.,0.]))) < 1.e-6
     assert m[0,0] > 0.1

@@ -31,9 +31,7 @@ def setup_loader(args):
     ds = Hdf5PoseDataset(
         args.filename, 
         transform=Compose([
-            # dtr.batch_to_torch_nchw,
-            #dtr.to_tensor,
-            dtr.offset_points_by_half_pixel, # For when pixels are considered grid cell centers
+            dtr.batch.offset_points_by_half_pixel, # For when pixels are considered grid cell centers
         ]),
         monochrome=True)
     if args.dryrun:

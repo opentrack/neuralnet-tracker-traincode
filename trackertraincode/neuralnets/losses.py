@@ -5,11 +5,11 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import pickle
+import h5py
 
 import trackertraincode.facemodel.keypoints68 as kpts68
-from trackertraincode.neuralnets.gmm import unpickle_scipy_gmm
 import trackertraincode.neuralnets.torchquaternion as torchquaternion
+from trackertraincode.neuralnets.modelcomponents import GaussianMixture
 
 
 SimpleLossSwitch = Literal['l2','smooth_l1']
@@ -79,18 +79,15 @@ class ShapeParameterLoss(object):
 class ShapePlausibilityLoss(nn.Module):
     def __init__(self):
         super().__init__()
-        with open(join(dirname(__file__),'../facemodel/shapeparams_gmm.pkl'), 'rb') as f:
-            scipy_gmm = pickle.load(f)
-        self.register_buffer('weights', torch.from_numpy(scipy_gmm.weights_))#.to(torch.float32))
-        self.register_buffer('scales', torch.from_numpy(scipy_gmm.covariances_).rsqrt())#.to(torch.float32))
-        self.register_buffer('means',torch.from_numpy(scipy_gmm.means_))#.to(torch.float32))
-        self.register_buffer('fudge_factor', torch.as_tensor(0.001/scipy_gmm.n_components))  #,dtype=torch.float32))
+        with h5py.File(join(dirname(__file__),'../facemodel/shapeparams_gmm.h5'), 'r') as f:
+            self.gmm = GaussianMixture.from_hdf5(f)
+        self.register_buffer('fudge_factor', torch.as_tensor(0.001/self.gmm.n_components)) 
 
     def _eval(self, x):
-        return -torch.logsumexp(-0.5*((x - self.means) * self.scales).square().sum(dim=-1) + torch.log(self.weights) + torch.log(self.scales).sum(dim=-1),dim=-1)*self.fudge_factor
+        return -self.gmm(x)*self.fudge_factor
 
-    def __call__(self, pred, sample):
-        mean_nll = self._eval(pred['shapeparam'][:,None,:].to(torch.float64)).to(torch.float32)
+    def forward(self, pred, sample):
+        mean_nll = self._eval(pred['shapeparam'].to(torch.float64)).to(torch.float32)
         assert len(mean_nll.shape) == 1
         return mean_nll
 

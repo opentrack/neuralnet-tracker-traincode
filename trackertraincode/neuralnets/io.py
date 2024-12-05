@@ -19,18 +19,22 @@ class SavableModel(Protocol):
         ...
 
 
-def save_model(model : SavableModel, filename : str):
-    contents = {
-        'state_dict' : model.state_dict(),
+def complement_lightning_checkpoint(model : SavableModel, checkpoint : dict[str,Any]):
+    assert 'state_dict' in checkpoint
+    checkpoint.update({
         'class_name' : model.__class__.__name__,
         'config' : model.get_config()
-    }
+    })
+
+def save_model(model : SavableModel, filename : str):
+    contents = { 'state_dict' : model.state_dict() }
+    complement_lightning_checkpoint(model, contents)
     torch.save(contents, filename)
 
 
 class InvalidFileFormatError(Exception):
     def __init__(self,msg):
-        super.__init__(msg)
+        super().__init__(msg)
 
 
 def load_model(filename : str, class_candidates : Container[type]):
