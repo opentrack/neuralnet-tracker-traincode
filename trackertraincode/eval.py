@@ -179,7 +179,7 @@ class Predictor:
     @torch.no_grad()
     def predict_batch(self, images: List[Tensor], rois: Tensor):
         B = len(images)
-        assert rois.shape == (B, 4), f"Bad roi shape: {rois.shape}"
+        assert rois.shape == (B, 4), f"Bad roi shape: {rois.shape}, expected {(B,4)}"
         device = images[-1].device
         batch = [self._create_sample(i, r) for i, r in zip(images, rois)]
         batch = Batch.collate(batch)

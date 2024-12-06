@@ -13,3 +13,6 @@ onnxruntime
 strenum
 tabulate
 pytest
+scikit-learn
+torchmetrics
+pytorch-lightning

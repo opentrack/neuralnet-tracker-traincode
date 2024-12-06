@@ -193,11 +193,13 @@ def compute_pred_keys(loader: dtr.SampleBySampleLoader, net: eval.InferenceNetwo
 def report(net_filename, data_name, roi_config: RoiConfig, args: argparse.Namespace, builder: TableBuilder):
     alignment: AlignmentScheme = args.alignment_scheme
 
-    loader = trackertraincode.pipelines.make_validation_loader(data_name, use_head_roi=roi_config.use_head_roi)
+    loader = trackertraincode.pipelines.make_validation_loader(
+        data_name, use_head_roi=roi_config.use_head_roi, return_single_samples=True
+    )
     net = load_pose_network(net_filename, args.device)
 
     pred_keys = compute_pred_keys(loader, net)
-    predictor = eval.Predictor(net, roi_config.expansion_factor, keep_keys=pred_keys)
+    predictor = eval.Predictor(net, roi_config.expansion_factor)
 
     metrics = torchmetrics.MetricCollection({'pose_errs': eval.NormalizedXYSError()})
     if alignment == 'none':
@@ -250,7 +252,7 @@ def report(net_filename, data_name, roi_config: RoiConfig, args: argparse.Namesp
             return []
 
         order = np.ascontiguousarray(np.argsort(quantity)[::-1])
-        loader = trackertraincode.pipelines.make_validation_loader(data_name, order=order)
+        loader = trackertraincode.pipelines.make_validation_loader(data_name, order=order, return_single_samples=True)
 
         def iter_gt_and_preds():
             for sample in loader:
