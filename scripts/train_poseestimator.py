@@ -18,10 +18,8 @@ from collections import defaultdict
 import tqdm
 
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import Callback, ModelCheckpoint
+from pytorch_lightning.callbacks import ModelCheckpoint
 
-# from pytorch_lightning.loggers import Logger,
-from pytorch_lightning.utilities import rank_zero_only
 import torch.optim as optim
 import torch
 import torch.nn as nn
@@ -32,8 +30,6 @@ import trackertraincode.neuralnets.negloglikelihood as NLL
 import trackertraincode.train as train
 import trackertraincode.pipelines
 
-from trackertraincode.neuralnets.io import complement_lightning_checkpoint
-from scripts.export_model import convert_posemodel_onnx
 from trackertraincode.datasets.batch import Batch
 from trackertraincode.pipelines import Tag
 
@@ -161,11 +157,6 @@ def create_optimizer(net, args: MyArgs):
     return optimizer, scheduler
 
 
-class SaveBestSpec(NamedTuple):
-    weights: List[float]
-    names: List[str]
-
-
 def setup_losses(args: MyArgs, net):
     C = train.Criterion
     cregularize = [
@@ -259,9 +250,7 @@ def setup_losses(args: MyArgs, net):
         ),
     }
 
-    savebest = SaveBestSpec([1.0, 1.0, 1.0], ["rot", "xy", "sz"])
-
-    return train_criterions, test_criterions, savebest
+    return train_criterions, test_criterions
 
 
 def create_net(args: MyArgs):
@@ -281,7 +270,7 @@ class LitModel(pl.LightningModule):
         super().__init__()
         self._args = args
         self._model = create_net(args)
-        train_criterions, test_criterions, savebest = setup_losses(args, self._model)
+        train_criterions, test_criterions = setup_losses(args, self._model)
         self._train_criterions = train_criterions
         self._test_criterions = test_criterions
 
@@ -313,120 +302,6 @@ class LitModel(pl.LightningModule):
     @property
     def model(self):
         return self._model
-
-
-class SwaCallback(Callback):
-    def __init__(self, start_epoch):
-        super().__init__()
-        self._swa_model: optim.swa_utils.AveragedModel | None = None
-        self._start_epoch = start_epoch
-
-    @property
-    def swa_model(self):
-        return self._swa_model.module
-
-    def on_train_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        assert isinstance(pl_module, LitModel)
-        self._swa_model = optim.swa_utils.AveragedModel(pl_module.model, device="cpu", use_buffers=True)
-
-    def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        assert isinstance(pl_module, LitModel)
-        if trainer.current_epoch > self._start_epoch:
-            self._swa_model.update_parameters(pl_module.model)
-
-    def on_train_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        assert self._swa_model is not None
-        swa_filename = join(trainer.default_root_dir, f"swa.ckpt")
-        models.save_model(self._swa_model.module, swa_filename)
-
-
-class MetricsGraphing(Callback):
-    def __init__(self):
-        super().__init__()
-        self._visu: train.TrainHistoryPlotter | None = None
-        self._metrics_accumulator = defaultdict(list)
-
-    def on_train_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        assert self._visu is None
-        self._visu = train.TrainHistoryPlotter(save_filename=join(trainer.default_root_dir, "train.pdf"))
-
-    def on_train_batch_end(
-        self, trainer: pl.Trainer, pl_module: pl.LightningModule, outputs: Any, batch: Any, batch_idx: int
-    ):
-        mt_losses: dict[str, torch.Tensor] = outputs["mt_losses"]
-        for k, v in mt_losses.items():
-            self._visu.add_train_point(trainer.current_epoch, batch_idx, k, v.numpy())
-        self._visu.add_train_point(trainer.current_epoch, batch_idx, "loss", outputs["loss"].detach().cpu().numpy())
-
-    def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        if trainer.lr_scheduler_configs:  # scheduler is not None:
-            scheduler = next(
-                iter(trainer.lr_scheduler_configs)
-            ).scheduler  # Pick the first scheduler (and there should only be one)
-            last_lr = next(iter(scheduler.get_last_lr()))  # LR from the first parameter group
-            self._visu.add_test_point(trainer.current_epoch, "lr", last_lr)
-
-        self._visu.summarize_train_values()
-
-    def on_validation_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        self._metrics_accumulator = defaultdict(list)
-
-    def on_validation_batch_end(
-        self,
-        trainer: pl.Trainer,
-        pl_module: pl.LightningModule,
-        outputs: list[train.LossVal],
-        batch: Any,
-        batch_idx: int,
-        dataloader_idx: int = 0,
-    ) -> None:
-        for val in outputs:
-            self._metrics_accumulator[val.name].append(val.val)
-
-    def on_validation_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        if self._visu is None:
-            return
-        for k, v in self._metrics_accumulator.items():
-            self._visu.add_test_point(trainer.current_epoch - 1, k, torch.cat(v).mean().cpu().numpy())
-        if trainer.current_epoch > 0:
-            self._visu.update_graph()
-
-
-class SimpleProgressBar(Callback):
-    """Creates progress bars for total training time and progress of per epoch."""
-
-    def __init__(self, batchsize: int):
-        super().__init__()
-        self._bar: tqdm.tqdm | None = None
-        self._epoch_bar: tqdm.tqdm | None = None
-        self._batchsize = batchsize
-
-    def on_train_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        self._bar = tqdm.tqdm(total=trainer.max_epochs, desc='Training', position=0)
-        self._epoch_bar = tqdm.tqdm(total=trainer.num_training_batches * self._batchsize, desc="Epoch", position=1)
-
-    def on_train_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        self._bar.close()
-        self._epoch_bar.close()
-        self._bar = None
-        self._epoch_bar = None
-
-    def on_train_epoch_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        self._epoch_bar.reset(self._epoch_bar.total)
-
-    def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        self._bar.update(1)
-
-    def on_train_batch_end(
-        self,
-        trainer: pl.Trainer,
-        pl_module: pl.LightningModule,
-        outputs: Mapping[str, Any],
-        batch: list[Batch] | Batch,
-        batch_idx: int,
-    ) -> None:
-        n = sum(b.meta.batchsize for b in batch) if isinstance(batch, list) else batch.meta.batchsize
-        self._epoch_bar.update(n)
 
 
 def main():
@@ -499,13 +374,13 @@ def main():
         save_weights_only=False,
     )
 
-    progress_cb = SimpleProgressBar(args.batchsize)
+    progress_cb = train.SimpleProgressBar(args.batchsize)
 
-    callbacks = [MetricsGraphing(), checkpoint_cb, progress_cb]
+    callbacks = [train.MetricsGraphing(), checkpoint_cb, progress_cb]
 
     swa_callback = None
     if args.swa:
-        swa_callback = SwaCallback(start_epoch=args.epochs * 2 // 3)
+        swa_callback = train.SwaCallback(start_epoch=args.epochs * 2 // 3)
         callbacks.append(swa_callback)
 
     # TODO: inf norm?
