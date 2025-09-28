@@ -19,7 +19,7 @@ import trackertraincode.train as train
 
 def test_plotter():
     plotter = train.TrainHistoryPlotter()
-    names = ['foo', 'bar', 'baz', 'lr']
+    names = ["foo", "bar", "baz", "lr"]
     for e in range(4):
         for t in range(5):
             for name in names[:-2]:
@@ -33,12 +33,12 @@ def test_plotter():
 
 class MseLoss(object):
     def __call__(self, pred, batch):
-        return torch.nn.functional.mse_loss(pred['test_head_out'], batch['y'], reduction='none')
+        return torch.nn.functional.mse_loss(pred["test_head_out"], batch["y"], reduction="none")
 
 
 class L1Loss(object):
     def __call__(self, pred, batch):
-        return torch.nn.functional.l1_loss(pred['test_head_out'], batch['y'], reduction='none')
+        return torch.nn.functional.l1_loss(pred["test_head_out"], batch["y"], reduction="none")
 
 
 class CosineDataset(Dataset):
@@ -51,16 +51,18 @@ class CosineDataset(Dataset):
     def __getitem__(self, i):
         x = torch.rand((1,))
         y = torch.cos(x)
-        return Batch(Metadata(0, batchsize=0), {'image': x, 'y': y})
+        return Batch(Metadata(0, batchsize=0), {"image": x, "y": y})
 
 
 class MockupModel(nn.Module):
     def __init__(self):
         super().__init__()
-        self.layers = torch.nn.Sequential(torch.nn.Linear(1, 128), torch.nn.ReLU(), torch.nn.Linear(128, 1))
+        self.layers = torch.nn.Sequential(
+            torch.nn.Linear(1, 128), torch.nn.ReLU(), torch.nn.Linear(128, 1)
+        )
 
     def forward(self, x: torch.Tensor):
-        return {'test_head_out': self.layers(x)}
+        return {"test_head_out": self.layers(x)}
 
     def get_config(self):
         return {}
@@ -71,15 +73,15 @@ class LitModel(pl.LightningModule):
         super().__init__()
         self._model = MockupModel()
         self._train_criterions = self.__setup_train_criterions()
-        self._test_criterion = train.Criterion('test_head_out_c1', MseLoss(), 1.0)
+        self._test_criterion = train.Criterion("test_head_out_c1", MseLoss(), 1.0)
 
     def __setup_train_criterions(self):
-        c1 = train.Criterion('c1', MseLoss(), 0.42)
-        c2 = train.Criterion('c2', L1Loss(), 0.7)
-        return train.CriterionGroup([c1, c2], 'test_head_out_')
+        c1 = train.Criterion("c1", MseLoss(), 0.42)
+        c2 = train.Criterion("c2", L1Loss(), 0.7)
+        return train.CriterionGroup([c1, c2], "test_head_out_")
 
     def training_step(self, batch: Batch, batch_idx):
-        preds = self._model(batch['image'])
+        preds = self._model(batch["image"])
         loss_sum, all_lossvals = train.default_compute_loss(
             preds, [batch], self.current_epoch, self._train_criterions
         )
@@ -116,7 +118,7 @@ def test_train_smoketest(tmp_path):
     train_loader = DataLoader(CosineDataset(20), batch_size=batchsize, collate_fn=Batch.collate)
     test_loader = DataLoader(CosineDataset(8), batch_size=batchsize, collate_fn=Batch.collate)
     model = LitModel()
-    model_out_dir = os.path.join(tmp_path, 'models')
+    model_out_dir = os.path.join(tmp_path, "models")
 
     checkpoint_cb = ModelCheckpoint(
         save_top_k=1,
@@ -150,6 +152,6 @@ def test_train_smoketest(tmp_path):
 
     visu_cb.close()
 
-    assert os.path.isfile(tmp_path / 'models' / 'swa.ckpt')
-    assert os.path.isfile(tmp_path / 'models' / 'best.ckpt')
-    assert os.path.isfile(tmp_path / 'models' / 'train.pdf')
+    assert os.path.isfile(tmp_path / "models" / "swa.ckpt")
+    assert os.path.isfile(tmp_path / "models" / "best.ckpt")
+    assert os.path.isfile(tmp_path / "models" / "train.pdf")

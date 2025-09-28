@@ -93,14 +93,14 @@ class PosesWithStd(NamedTuple):
         for pose in poses:
             for field in Poses._fields:
                 by_field[field].append(getattr(pose, field))
-        items = {k + '_std': np.std(v, axis=0) for k, v in by_field.items()}
+        items = {k + "_std": np.std(v, axis=0) for k, v in by_field.items()}
         items.update({k: np.average(v, axis=0) for k, v in by_field.items()})
         return PosesWithStd(**items)
 
 
 def convertlabels(labels: dict) -> Poses:
-    hpb = utils.as_hpb(Rotation.from_quat(labels.pop('pose')))
-    coord = labels.pop('coord').numpy()
+    hpb = utils.as_hpb(Rotation.from_quat(labels.pop("pose")))
+    coord = labels.pop("coord").numpy()
     xy = coord[..., :2]
     sz = coord[..., 2]
     labels = {k: v.numpy() for k, v in labels.items() if k in Poses._fields}
@@ -148,9 +148,15 @@ def plot_hpb(ax, pose: Union[Poses, PosesWithStd], **kwargs):
         x = np.arange(len(pose.sz))
         ymin = (pose.hpb - pose.hpb_std) * rad2deg
         ymax = (pose.hpb + pose.hpb_std) * rad2deg
-        ax[0].fill_between(x, ymin[:1000, 0], ymax[:1000, 0], alpha=0.2, color=line0.get_color(), **kwargs)
-        ax[1].fill_between(x, ymin[:1000, 1], ymax[:1000, 1], alpha=0.2, color=line1.get_color(), **kwargs)
-        ax[2].fill_between(x, ymin[:1000, 2], ymax[:1000, 2], alpha=0.2, color=line2.get_color(), **kwargs)
+        ax[0].fill_between(
+            x, ymin[:1000, 0], ymax[:1000, 0], alpha=0.2, color=line0.get_color(), **kwargs
+        )
+        ax[1].fill_between(
+            x, ymin[:1000, 1], ymax[:1000, 1], alpha=0.2, color=line1.get_color(), **kwargs
+        )
+        ax[2].fill_between(
+            x, ymin[:1000, 2], ymax[:1000, 2], alpha=0.2, color=line2.get_color(), **kwargs
+        )
     return line0
 
 
@@ -169,7 +175,7 @@ def visualize(preds: List[Union[Poses, PosesWithStd]], checkpoints: List[str]):
             ax2.yaxis.set_visible(False)
             ax2.set_zorder(ax.get_zorder() - 1)
             for a, b in blinks:
-                ax2.bar(0.5 * (a + b), 1, width=b - a, bottom=0, color='yellow')
+                ax2.bar(0.5 * (a + b), 1, width=b - a, bottom=0, color="yellow")
         pyplot.tight_layout()
 
     fig, axes = pyplot.subplots(6, 1, figsize=(18, 5))
@@ -179,7 +185,7 @@ def visualize(preds: List[Union[Poses, PosesWithStd]], checkpoints: List[str]):
         line.set_label(checkpoints[i])
         plot_coord(axes[3:6], pred)
 
-    for ax, label in zip(axes, 'yaw,pitch,roll,x,y,size'.split(',')):
+    for ax, label in zip(axes, "yaw,pitch,roll,x,y,size".split(",")):
         ax.set(ylabel=label)
 
     make_nice(axes)
@@ -196,7 +202,7 @@ def visualize(preds: List[Union[Poses, PosesWithStd]], checkpoints: List[str]):
             for i in range(3):
                 for j in range(i + 1):
                     axes[k].plot(pred.pose_scales_tril[..., i, j], label=checkpoint)
-                    axes[k].set(ylabel=f'r cov[{i},{j}]')
+                    axes[k].set(ylabel=f"r cov[{i},{j}]")
                     axes[k].set(ylim=ylim)
                     k += 1
             if _has_coord_cov_matrix(pred):
@@ -206,11 +212,11 @@ def visualize(preds: List[Union[Poses, PosesWithStd]], checkpoints: List[str]):
                 axes[k + 3].plot(pred.coord_scales[..., 1, 0])
                 axes[k + 4].plot(pred.coord_scales[..., 2, 0])
                 axes[k + 5].plot(pred.coord_scales[..., 2, 1])
-                for i, label in zip(range(k, k + 6), ['sz', 'x', 'y', 'x-y', 'y-sz', 'x-sz']):
+                for i, label in zip(range(k, k + 6), ["sz", "x", "y", "x-y", "y-sz", "x-sz"]):
                     axes[i].set(ylabel=label)
             elif pred.coord_scales is not None:
                 axes[k].plot(pred.coord_scales[..., 2])
-                axes[k].set(ylabel='sz')
+                axes[k].set(ylabel="sz")
         make_nice(axes)
 
         return [fig, fig2]
@@ -230,11 +236,11 @@ def report_blink_stability(poses_by_parameters: List[Poses]):
     def param_average_mse(name):
         return np.average([mse(getattr(poses, name)) for poses in poses_by_parameters], axis=0)
 
-    for name in ['hpb', 'sz', 'xy']:
+    for name in ["hpb", "sz", "xy"]:
         mse_val = np.atleast_1d(param_average_mse(name))
-        if name == 'hpb':
+        if name == "hpb":
             mse_val *= 180.0 / np.pi
-        print(f"\t {name:4s}: " + ", ".join(f'{x:0.2f}' for x in mse_val))
+        print(f"\t {name:4s}: " + ", ".join(f"{x:0.2f}" for x in mse_val))
 
 
 def closed_loop_tracking(model: eval.Predictor, loader):
@@ -242,11 +248,11 @@ def closed_loop_tracking(model: eval.Predictor, loader):
     preds = []
     bar = tqdm.tqdm(total=len(loader.dataset))
     for sample in loader:
-        image, roi = sample['image'], sample['roi']
+        image, roi = sample["image"], sample["roi"]
         if current_roi is not None:
             roi[...] = current_roi
         pred = model.predict_batch(image[None, ...], roi[None, ...])
-        x0, y0, x1, y1 = pred['roi'][0]
+        x0, y0, x1, y1 = pred["roi"][0]
         w, h = sample.meta.image_wh
         current_roi = torch.tensor([max(0.0, x0), max(0.0, y0), min(x1, w), min(y1, h)])
         preds.append(pred)
@@ -258,7 +264,7 @@ def closed_loop_tracking(model: eval.Predictor, loader):
 
 def open_loop_tracking(model: eval.Predictor, loader: dtr.SampleBySampleLoader):
     sample = loader.dataset[0]
-    output_keys = model.predict_batch(sample['image'][None, ...], sample['roi'][None, ...]).keys()
+    output_keys = model.predict_batch(sample["image"][None, ...], sample["roi"][None, ...]).keys()
     metric = torchmetrics.MetricCollection({k: eval.PredExtractor(k) for k in output_keys})
     preds = model.evaluate(metric, loader)
     return convertlabels(preds)
@@ -271,7 +277,7 @@ def _track_multiple_networks(
     prediction_func: Callable[[torch.nn.Module, dtr.SampleBySampleLoader], Poses],
     crop_size_factor: float,
 ) -> Union[Poses, PosesWithStd]:
-    '''Predictions from a single or a group of networks'''
+    """Predictions from a single or a group of networks"""
     checkpoints = _find_models(path)
     print(f"Evaluating {path}. Found {len(checkpoints)} checkpoints.")
     preds = []
@@ -283,7 +289,7 @@ def _track_multiple_networks(
 
 
 def main_open_loop(paths: List[str], device):
-    loader = trackertraincode.pipelines.make_validation_loader('myself', return_single_samples=True)
+    loader = trackertraincode.pipelines.make_validation_loader("myself", return_single_samples=True)
 
     def process(path, crop_size_factor):
         return _track_multiple_networks(path, device, loader, open_loop_tracking, crop_size_factor)
@@ -293,7 +299,7 @@ def main_open_loop(paths: List[str], device):
         poses_aggregated, poses_lists = zip(*[process(fn, crop_size_factor) for fn in paths])
         figs = visualize(poses_aggregated, paths)
         for fig in figs:
-            fig.suptitle(f'cropsize={crop_size_factor:.1f}')
+            fig.suptitle(f"cropsize={crop_size_factor:.1f}")
         for fn, poses_list in zip(paths, poses_lists):
             poses_by_checkpoints[fn] += poses_list
     pyplot.show()
@@ -304,16 +310,18 @@ def main_open_loop(paths: List[str], device):
 
 
 def main_closed_loop(paths: List[str], device):
-    loader = trackertraincode.pipelines.make_validation_loader('myself', return_single_samples=True)
+    loader = trackertraincode.pipelines.make_validation_loader("myself", return_single_samples=True)
 
     def process(path, crop_size_factor):
-        return _track_multiple_networks(path, device, loader, closed_loop_tracking, crop_size_factor)
+        return _track_multiple_networks(
+            path, device, loader, closed_loop_tracking, crop_size_factor
+        )
 
     for crop_size_factor in [1.0, 1.2]:
         poses_aggregated, poses_lists = zip(*[process(fn, crop_size_factor) for fn in paths])
         figs = visualize(poses_aggregated, paths)
         for fig in figs:
-            fig.suptitle(f'closed-loop cropsize={crop_size_factor:.1f}')
+            fig.suptitle(f"closed-loop cropsize={crop_size_factor:.1f}")
 
     pyplot.show()
 
@@ -321,7 +329,9 @@ def main_closed_loop(paths: List[str], device):
 def _create_biwi_sections_loader():
     intervals = [(145, 216), (1360, 1464), (3030, 3120), (8020, 8100), (6570, 6600), (9030, 9080)]
     indices = np.concatenate([np.arange(a, b) for a, b in intervals])
-    loader = trackertraincode.pipelines.make_validation_loader('biwi', return_single_samples=True, order=indices)
+    loader = trackertraincode.pipelines.make_validation_loader(
+        "biwi", return_single_samples=True, order=indices
+    )
     sequence_starts = np.cumsum([0] + [(b - a) for a, b in intervals])
     return loader, sequence_starts
 
@@ -329,14 +339,16 @@ def _create_biwi_sections_loader():
 def main_analyze_pitch_vs_yaw(checkpoints: List[str]):
     fig, axes = pyplot.subplots(2, 1, figsize=(20, 5))
 
-    loader = trackertraincode.pipelines.make_validation_loader("myself_yaw", return_single_samples=True)
+    loader = trackertraincode.pipelines.make_validation_loader(
+        "myself_yaw", return_single_samples=True
+    )
 
     def predict_all_nets(loader):
         poses_vs_model = {}
         for checkpoint in checkpoints:
-            predictor = eval.Predictor(checkpoint, device='cuda')
+            predictor = eval.Predictor(checkpoint, device="cuda")
             metrics = torchmetrics.MetricCollection(
-                {'pose': eval.PredExtractor('pose'), 'coord': eval.PredExtractor('coord')}
+                {"pose": eval.PredExtractor("pose"), "coord": eval.PredExtractor("coord")}
             )
             results = predictor.evaluate(metrics, loader)
             poses = convertlabels(results)
@@ -349,16 +361,16 @@ def main_analyze_pitch_vs_yaw(checkpoints: List[str]):
     ax = axes[0]
     for name, poses in poses_vs_model.items():
         ax.scatter(poses.hpb[:, 0], poses.hpb[:, 1], label=name, s=5.0)
-    ax.set(xlabel='yaw', ylabel='pitch')
+    ax.set(xlabel="yaw", ylabel="pitch")
     ax.legend()
-    ax.axhline(0.0, color='k')
-    ax.axvline(0.0, color='k')
+    ax.axhline(0.0, color="k")
+    ax.axvline(0.0, color="k")
 
     loader, sequence_starts = _create_biwi_sections_loader()
     poses_vs_model = predict_all_nets(loader)
 
     ax = axes[1]
-    colors = 'rgbcmy'
+    colors = "rgbcmy"
     alphas = [0.5] * len(checkpoints)
     alphas[0] = 1.0
     for j, (name, poses) in enumerate(poses_vs_model.items()):
@@ -367,10 +379,10 @@ def main_analyze_pitch_vs_yaw(checkpoints: List[str]):
             hpb = poses.hpb[a:b]
             # order = np.argsort(hpb[:,0])
             ax.plot(hpb[:, 0], hpb[:, 1], c=colors[i], alpha=alphas[j])
-    ax.set(xlabel='yaw', ylabel='pitch')
+    ax.set(xlabel="yaw", ylabel="pitch")
     ax.legend()
-    ax.axhline(0.0, color='k')
-    ax.axvline(0.0, color='k')
+    ax.axhline(0.0, color="k")
+    ax.axvline(0.0, color="k")
 
     pyplot.show()
 
@@ -381,7 +393,7 @@ class NoisifyBatch:
 
     def __call__(self, batch: Batch):
         batch = copy.copy(batch)
-        batch['image'] = batch['image'] + self._noise_scale * torch.randn_like(batch['image'])
+        batch["image"] = batch["image"] + self._noise_scale * torch.randn_like(batch["image"])
         return batch
 
 
@@ -392,20 +404,22 @@ def _vis_one_noise_resist(noiselevels, metrics_by_noise_and_quantity, quantity, 
     std = np.std(values, axis=-1)
     ax[0].errorbar(noiselevels, avg, yerr=std, capsize=10.0, label=lbl)
     ax[0].legend()
-    if quantity == 'pose':
-        ax[0].set(xlim=(0.0, 64), ylim=(4.0, 11.0), xlabel='input noise', ylabel='rot err [deg]')
-    elif quantity == 'roi':
-        ax[0].set(xlim=(0.0, 64), ylim=(0.0, 0.02), xlabel='input noise', ylabel='coordinate err [%]')
+    if quantity == "pose":
+        ax[0].set(xlim=(0.0, 64), ylim=(4.0, 11.0), xlabel="input noise", ylabel="rot err [deg]")
+    elif quantity == "roi":
+        ax[0].set(
+            xlim=(0.0, 64), ylim=(0.0, 0.02), xlabel="input noise", ylabel="coordinate err [%]"
+        )
 
 
 def main_vis_noise_resist(paths: list[str]):
     datas = []
     for i, path in enumerate(paths):
         print(f"({i}) ", path)
-        with open(path, 'rb') as f:
+        with open(path, "rb") as f:
             datas.append((path, pickle.load(f)))
 
-    for quantity in ['pose']:
+    for quantity in ["pose"]:
         fig, ax = pyplot.subplots(1, 1)
         ax = [ax]
         for i, (name, (noiselevels, metrics_by_noise_and_quantity)) in enumerate(datas):
@@ -422,16 +436,18 @@ def main_analyze_noise_resist(paths: List[str]):
     # data_samples = 10
     # noiselevels = [ 1., 8., 16.,  ]
 
-    def predict_noisy_dataset(predictor: eval.Predictor, noiselevel, quantity_names) -> dict[str, Tensor]:
-        '''Predicts given noisy inputs.
+    def predict_noisy_dataset(
+        predictor: eval.Predictor, noiselevel, quantity_names
+    ) -> dict[str, Tensor]:
+        """Predicts given noisy inputs.
 
         Return:
             Dicts indexed by quantity name, returning each:
             Predictions (B x Noise x Feature) or GT (B x Feature).
-        '''
+        """
 
         loader = trackertraincode.pipelines.make_validation_loader(
-            'aflw2k3d',
+            "aflw2k3d",
             use_head_roi=True,
             order=(None if data_samples is None else np.arange(data_samples)),
             additional_sample_transform=Compose(predictor.normalize_crop_transform),
@@ -439,22 +455,22 @@ def main_analyze_noise_resist(paths: List[str]):
         )
 
         metrics = torchmetrics.MetricCollection({})
-        if 'pose' in quantity_names:
-            metrics.add_metrics({'pose': eval.GeodesicError()})
+        if "pose" in quantity_names:
+            metrics.add_metrics({"pose": eval.GeodesicError()})
 
         return predictor.evaluate_cropped_normalized(metrics, loader)
 
     assert all(bool(_find_models(path)) for path in paths)
     metrics_by_noise_and_quantity = defaultdict(list)
     for path in paths:
-        predictor = eval.Predictor(path, device='cuda')
+        predictor = eval.Predictor(path, device="cuda")
         for noiselevel in noiselevels:
-            results = predict_noisy_dataset(predictor, noiselevel, ('pose'))
-            metrics_by_noise_and_quantity[noiselevel, 'pose'].append(results['pose'].mean().numpy())
+            results = predict_noisy_dataset(predictor, noiselevel, ("pose"))
+            metrics_by_noise_and_quantity[noiselevel, "pose"].append(results["pose"].mean().numpy())
 
-    filename = os.path.join('/tmp', os.path.splitext(paths[0])[0] + "_noise_resist_v3.pkl")
+    filename = os.path.join("/tmp", os.path.splitext(paths[0])[0] + "_noise_resist_v3.pkl")
     os.makedirs(os.path.dirname(filename), exist_ok=True)
-    with open(filename, 'wb') as f:
+    with open(filename, "wb") as f:
         pickle.dump((noiselevels, metrics_by_noise_and_quantity), f)
 
     if 1:
@@ -468,17 +484,22 @@ def main_analyze_uncertainty_error_correlation(paths: List[str]):
 
     for checkpoint in checkpoints:
         metrics = torchmetrics.MetricCollection(
-            {'pose': eval.GeodesicError(), 'pose_scales_tril': eval.PredExtractor('pose_scales_tril')}
+            {
+                "pose": eval.GeodesicError(),
+                "pose_scales_tril": eval.PredExtractor("pose_scales_tril"),
+            }
         )
-        predictor = eval.Predictor(checkpoint, device='cuda')
+        predictor = eval.Predictor(checkpoint, device="cuda")
         loader = trackertraincode.pipelines.make_validation_loader(
-            'aflw2k3d', use_head_roi=True, additional_sample_transform=Compose(predictor.normalize_crop_transform)
+            "aflw2k3d",
+            use_head_roi=True,
+            additional_sample_transform=Compose(predictor.normalize_crop_transform),
         )
         results = predictor.evaluate_cropped_normalized(metrics, loader)
-        results['undertainty'] = torch.norm(
-            torch.matmul(results['pose_scales_tril'], results['pose_scales_tril'].mT), dim=(-1, -2)
+        results["undertainty"] = torch.norm(
+            torch.matmul(results["pose_scales_tril"], results["pose_scales_tril"].mT), dim=(-1, -2)
         )
-        results_by_paths[checkpoint] = (results['pose'], results['undertainty'])
+        results_by_paths[checkpoint] = (results["pose"], results["undertainty"])
 
     fig, ax = pyplot.subplots(1, 1, dpi=120, figsize=(3, 2))
     ax = [ax]
@@ -490,38 +511,44 @@ def main_analyze_uncertainty_error_correlation(paths: List[str]):
             np.sqrt(uncertainty) * 180.0 / np.pi,
             rasterized=True,
             s=10.0,
-            edgecolor='none',
+            edgecolor="none",
             alpha=0.5,
         )
-        ax[0].set(xlabel='geo. err. °', ylabel='uncertainty °')
+        ax[0].set(xlabel="geo. err. °", ylabel="uncertainty °")
     pyplot.tight_layout
-    fig.savefig('/tmp/uncertainty_vs_err.svg')
+    fig.savefig("/tmp/uncertainty_vs_err.svg")
     pyplot.show()
 
 
-if __name__ == '__main__':
-    np.seterr(all='raise')
+if __name__ == "__main__":
+    np.seterr(all="raise")
     parser = argparse.ArgumentParser(description="Evaluates the model")
     parser.add_argument(
-        'mode',
-        choices=['closed-loop', 'pitch-yaw', 'open-loop', 'noise-resist', 'uncertainty-correlation'],
-        default='none',
+        "mode",
+        choices=[
+            "closed-loop",
+            "pitch-yaw",
+            "open-loop",
+            "noise-resist",
+            "uncertainty-correlation",
+        ],
+        default="none",
     )
-    parser.add_argument('filename', nargs='+', help='input filenames', type=str)
-    parser.add_argument('--vis', action='store_true', default=False)
+    parser.add_argument("filename", nargs="+", help="input filenames", type=str)
+    parser.add_argument("--vis", action="store_true", default=False)
     args = parser.parse_args()
-    if args.mode == 'open-loop':
-        main_open_loop(args.filename, 'cuda')
-    elif args.mode == 'closed-loop':
-        main_closed_loop(args.filename, 'cuda')
-    elif args.mode == 'pitch-yaw':
+    if args.mode == "open-loop":
+        main_open_loop(args.filename, "cuda")
+    elif args.mode == "closed-loop":
+        main_closed_loop(args.filename, "cuda")
+    elif args.mode == "pitch-yaw":
         main_analyze_pitch_vs_yaw(args.filename)
-    elif args.mode == 'noise-resist':
+    elif args.mode == "noise-resist":
         if args.vis:
             main_vis_noise_resist(args.filename)
         else:
             main_analyze_noise_resist(args.filename)
-    elif args.mode == 'uncertainty-correlation':
+    elif args.mode == "uncertainty-correlation":
         main_analyze_uncertainty_error_correlation(args.filename)
     else:
         raise RuntimeError(f"Unkown mode {args.mode}")

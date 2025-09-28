@@ -57,7 +57,7 @@ class MyArgs(argparse.Namespace):
     with_roi_train: bool
     dropout_prob: float
     rampup_nll_losses: bool
-    enable_6drot : bool
+    enable_6drot: bool
 
 
 def parse_dataset_definition(arg: str):
@@ -76,8 +76,8 @@ def parse_dataset_definition(arg: str):
         "repro_300_wlp_woextra": trackertraincode.pipelines.Id.REPO_300WLP_WO_EXTRA,
         "wflw_lp": trackertraincode.pipelines.Id.WFLW_LP,
         "lapa_megaface_lp": trackertraincode.pipelines.Id.LAPA_MEGAFACE_LP,
-        "panoptic" : trackertraincode.pipelines.Id.PANOPTIC_CMU,
-        "replicantface" : trackertraincode.pipelines.Id.REPLICANT_FACE
+        "panoptic": trackertraincode.pipelines.Id.PANOPTIC_CMU,
+        "replicantface": trackertraincode.pipelines.Id.REPLICANT_FACE,
     }
 
     splitted = arg.split("+")
@@ -112,7 +112,10 @@ def setup_datasets(args: MyArgs):
 
 
 def find_variance_parameters(net: nn.Module):
-    if isinstance(net, (NLL.FeaturesAsTriangularScale, NLL.FeaturesAsDiagonalScale, NLL.DiagonalScaleParameter)):
+    if isinstance(
+        net,
+        (NLL.FeaturesAsTriangularScale, NLL.FeaturesAsDiagonalScale, NLL.DiagonalScaleParameter),
+    ):
         return list(net.parameters())
     else:
         return sum((find_variance_parameters(x) for x in net.children()), start=[])
@@ -130,7 +133,9 @@ def setup_lr_with_slower_variance_training(net, base_lr):
     transformer_params = find_transformer_parameters(net)
     # print ("Transformer param shapes: ", [p.shape for p in transformer_params])
     other_params = list(
-        frozenset(net.parameters()).difference(frozenset(variance_params) | frozenset(transformer_params))
+        frozenset(net.parameters()).difference(
+            frozenset(variance_params) | frozenset(transformer_params)
+        )
     )
     return [
         {"params": other_params, "lr": base_lr},
@@ -154,15 +159,23 @@ def create_optimizer(net, args: MyArgs):
 
     n_epochs = args.epochs
     # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, [n_epochs//2], 0.1)
-    scheduler = train.ExponentialUpThenSteps(optimizer, max(1, n_epochs // (10)), 0.1, [n_epochs // 2])
+    scheduler = train.ExponentialUpThenSteps(
+        optimizer, max(1, n_epochs // (10)), 0.1, [n_epochs // 2]
+    )
     # scheduler = train.LinearUpThenSteps(optimizer, max(1,n_epochs//(10)), 0.1, [n_epochs//2])
 
     return optimizer, scheduler
 
 
 def setup_losses(args: MyArgs, net):
-    rot_loss =  losses.Rot6dReprLoss() if args.enable_6drot else losses.QuatPoseLoss("approx_distance")
-    rot_constraint = losses.Rot6dNormalizationSoftConstraint() if args.enable_6drot else losses.QuaternionNormalizationSoftConstraint()
+    rot_loss = (
+        losses.Rot6dReprLoss() if args.enable_6drot else losses.QuatPoseLoss("approx_distance")
+    )
+    rot_constraint = (
+        losses.Rot6dNormalizationSoftConstraint()
+        if args.enable_6drot
+        else losses.QuaternionNormalizationSoftConstraint()
+    )
 
     C = train.Criterion
     cregularize = [
@@ -192,12 +205,16 @@ def setup_losses(args: MyArgs, net):
             C("nllcoord", NLL.CorrelatedCoordPoseNLLLoss().cuda(), ramped_up_nll_weight(0.5)),
         ]
         if args.with_roi_train:
-            roilosses += [C("nllbox", NLL.BoxNLLLoss(distribution="gaussian"), ramped_up_nll_weight(0.01))]
+            roilosses += [
+                C("nllbox", NLL.BoxNLLLoss(distribution="gaussian"), ramped_up_nll_weight(0.01))
+            ]
         if args.with_pointhead:
             pointlosses += [
                 C(
                     "nllpoints3d",
-                    NLL.Points3dNLLLoss(chin_weight=0.8, eye_weight=0.0, distribution="gaussian").cuda(),
+                    NLL.Points3dNLLLoss(
+                        chin_weight=0.8, eye_weight=0.0, distribution="gaussian"
+                    ).cuda(),
                     ramped_up_nll_weight(0.5),
                 )
             ]
@@ -223,12 +240,18 @@ def setup_losses(args: MyArgs, net):
             roilosses += [C("box", losses.BoxLoss("l2"), 0.01)]
         if args.with_pointhead:
             pointlosses += [
-                C("points3d", losses.Points3dLoss("l2", chin_weight=0.8, eye_weights=0.0).cuda(), 0.5),
+                C(
+                    "points3d",
+                    losses.Points3dLoss("l2", chin_weight=0.8, eye_weights=0.0).cuda(),
+                    0.5,
+                ),
             ]
             pointlosses25d += [
                 C(
                     "points3d",
-                    losses.Points3dLoss("l2", pointdimension=2, chin_weight=0.8, eye_weights=0.0).cuda(),
+                    losses.Points3dLoss(
+                        "l2", pointdimension=2, chin_weight=0.8, eye_weights=0.0
+                    ).cuda(),
                     0.5,
                 ),
             ]
@@ -269,7 +292,7 @@ def create_net(args: MyArgs):
         config=args.backbone,
         enable_uncertainty=args.with_nll_loss,
         backbone_args={},
-        enable_6drot=args.enable_6drot
+        enable_6drot=args.enable_6drot,
     )
 
 
@@ -285,8 +308,8 @@ class LitModel(pl.LightningModule):
         self._test_criterions = test_criterions
 
     def training_step(self, batches: list[Batch], batch_idx):
-        inputs = torch.concat([b['image'] for b in batches], dim=0)
-        coord_convention_ids = torch.concat([b['coord_convention_id'] for b in batches], dim=0)
+        inputs = torch.concat([b["image"] for b in batches], dim=0)
+        coord_convention_ids = torch.concat([b["coord_convention_id"] for b in batches], dim=0)
         preds = self._model(inputs, coord_convention_ids)
         loss_sum, all_lossvals = train.default_compute_loss(
             preds, batches, self.current_epoch, self._train_criterions
@@ -297,7 +320,13 @@ class LitModel(pl.LightningModule):
                 itertools.chain.from_iterable(all_lossvals)
             ).items()
         }
-        self.log("loss", loss_sum, on_epoch=True, prog_bar=True, batch_size=sum(b.meta.batchsize for b in batches))
+        self.log(
+            "loss",
+            loss_sum,
+            on_epoch=True,
+            prog_bar=True,
+            batch_size=sum(b.meta.batchsize for b in batches),
+        )
         return {"loss": loss_sum, "mt_losses": loss_val_by_name}
 
     def validation_step(self, batch: Batch, batch_idx: int) -> torch.Tensor | dict[str, Any] | None:
@@ -327,7 +356,9 @@ def main():
     parser.add_argument("--lr", help="learning rate", type=float, default=1.0e-3)
     # parser.add_argument("--find-lr", help="Enable learning rate finder mode", action="store_true", default=False)
     parser.add_argument("--epochs", help="Number of epochs", type=int, default=200)
-    parser.add_argument("--ds", help="Which datasets to train on. See code.", type=str, default="300wlp")
+    parser.add_argument(
+        "--ds", help="Which datasets to train on. See code.", type=str, default="300wlp"
+    )
     # parser.add_argument(
     #     "--no-plotting", help="Disable plotting of losses", action="store_false", default=True, dest="plotting"
     # )
@@ -339,10 +370,17 @@ def main():
     #     dest="plot_save_filename",
     # )
     parser.add_argument(
-        "--with-swa", help="Enable stochastic weight averaging", action="store_true", default=False, dest="swa"
+        "--with-swa",
+        help="Enable stochastic weight averaging",
+        action="store_true",
+        default=False,
+        dest="swa",
     )
     parser.add_argument(
-        "--outdir", help="Output sub-directory", type=str, default=join(dirname(__file__), "..", "model_files")
+        "--outdir",
+        help="Output sub-directory",
+        type=str,
+        default=join(dirname(__file__), "..", "model_files"),
     )
     parser.add_argument(
         "--ds-weighting",
@@ -352,7 +390,11 @@ def main():
         dest="ds_weight_are_sampling_frequencies",
     )
     parser.add_argument(
-        "--no-pointhead", help="Disable landmark prediction", action="store_false", default=True, dest="with_pointhead"
+        "--no-pointhead",
+        help="Disable landmark prediction",
+        action="store_false",
+        default=True,
+        dest="with_pointhead",
     )
     parser.add_argument("--with-nll-loss", default=False, action="store_true")
     parser.add_argument("--raug", default=30, type=float, dest="rotation_aug_angle")
@@ -368,7 +410,7 @@ def main():
     )
     parser.add_argument("--no-roi-train", default=True, action="store_false", dest="with_roi_train")
     parser.add_argument("--rampup-nll-losses", default=False, action="store_true")
-    parser.add_argument("--enable-6drot", default=False, action='store_true')
+    parser.add_argument("--enable-6drot", default=False, action="store_true")
 
     args: MyArgs = parser.parse_args()
     args.input_size = 129
@@ -421,7 +463,6 @@ def main():
         models.save_model(model.model, checkpoint_cb.last_model_path)
         model = LitModel.load_from_checkpoint(checkpoint_cb.best_model_path, args=args).to("cpu")
         models.save_model(model.model, checkpoint_cb.best_model_path)
-
 
 
 if __name__ == "__main__":

@@ -17,16 +17,16 @@ from trackertraincode.facemodel.bfm import BFMModel
 from trackertraincode.neuralnets.rotrepr import RotationRepr
 
 
-def set_bn_momentum(model : nn.Module, momentum):
-    if isinstance(model, (nn.BatchNorm1d,nn.BatchNorm2d,nn.BatchNorm3d)):
-        assert hasattr(model, 'momentum')
+def set_bn_momentum(model: nn.Module, momentum):
+    if isinstance(model, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+        assert hasattr(model, "momentum")
         model.momentum = momentum
     for module in model.children():
         set_bn_momentum(module, momentum)
 
 
 class Residual(nn.Module):
-    def __init__(self, *fns, skip_layer = None):
+    def __init__(self, *fns, skip_layer=None):
         super().__init__()
         self.fn = nn.Sequential(*fns)
         self.skip_layer = nn.Identity() if skip_layer is None else skip_layer
@@ -35,184 +35,188 @@ class Residual(nn.Module):
         return self.fn(x) + self.skip_layer(x)
 
 
-def rigid_transformation_25d(r : RotationRepr, t : Tensor, s : Tensor, points : Tensor):
+def rigid_transformation_25d(r: RotationRepr, t: Tensor, s: Tensor, points: Tensor):
     """
-        25d refers to 2.5 dimensional because this uses only a 2d offset.
-        r : quaternion (normalized)
-        t : 2d translation
-        s : scaling
-        points: 3d points in local space
+    25d refers to 2.5 dimensional because this uses only a 2d offset.
+    r : quaternion (normalized)
+    t : 2d translation
+    s : scaling
+    points: 3d points in local space
 
-        Return: 3d points in parent space. After the rotation, 
-                the z-coordinates remain unchanged.
+    Return: 3d points in parent space. After the rotation,
+            the z-coordinates remain unchanged.
     """
     # Points: (..., 68, 3)
     # r: (..., 4)
     tmp_pos = r.rotate_points(points)
-    tmp_pos = tmp_pos * s[...,None,:]
+    tmp_pos = tmp_pos * s[..., None, :]
     screen_pos = tmp_pos
     screen_pos = screen_pos.clone()
-    screen_pos[...,:2] += t[...,None,:]
+    screen_pos[..., :2] += t[..., None, :]
     return screen_pos
 
 
 class DeformableHeadKeypoints(nn.Module):
     def __init__(self, num_shape=40, num_expr=10):
         super(DeformableHeadKeypoints, self).__init__()
-        self.num_eigvecs = num_shape+num_expr
+        self.num_eigvecs = num_shape + num_expr
         self.num_shape = num_shape
         self.num_expr = num_expr
         full = BFMModel()
         keypts = torch.from_numpy(full.scaled_vertices[full.keypoints]).contiguous()
-        keyeigvecs = torch.from_numpy(full.scaled_bases[:,full.keypoints,:]).contiguous()
-        self.register_buffer('keypts', keypts)
-        self.register_buffer('keyeigvecs', keyeigvecs)
+        keyeigvecs = torch.from_numpy(full.scaled_bases[:, full.keypoints, :]).contiguous()
+        self.register_buffer("keypts", keypts)
+        self.register_buffer("keyeigvecs", keyeigvecs)
 
     def _deformvector(self, shapeparams):
         # (..., num_eigvecs, 68, 3) x (... , B, num_eigvecs). -> Need for broadcasting and unsqueezing.
-        local_keypts = self.keyeigvecs*shapeparams[...,None,None]
+        local_keypts = self.keyeigvecs * shapeparams[..., None, None]
         local_keypts = torch.sum(local_keypts, dim=-3)
         return local_keypts
 
-    def forward(self, shapeparams : Tensor) -> Tensor:
+    def forward(self, shapeparams: Tensor) -> Tensor:
         local_keypts = self._deformvector(shapeparams)
         local_keypts += self.keypts
-        assert local_keypts.shape[-1]==3 and local_keypts.shape[-2]==68
+        assert local_keypts.shape[-1] == 3 and local_keypts.shape[-2] == 68
         # Return in format (batch x points x dimensions)
         return local_keypts
 
 
 class PosedDeformableHead(nn.Module):
-    def __init__(self, deformable_head : DeformableHeadKeypoints):
+    def __init__(self, deformable_head: DeformableHeadKeypoints):
         super().__init__()
         self.deformable_head = deformable_head
 
-    def forward(self, coord : Tensor, rots : RotationRepr, params : Tensor) -> Tensor:
+    def forward(self, coord: Tensor, rots: RotationRepr, params: Tensor) -> Tensor:
         local_keypts = self.deformable_head(params)
-        points = rigid_transformation_25d(
-            rots,
-            coord[...,:2],
-            coord[...,2:],
-            local_keypts)
+        points = rigid_transformation_25d(rots, coord[..., :2], coord[..., 2:], local_keypts)
         assert points.shape[-1] == 3 and points.shape[:-2] == rots.shape
         return points
 
 
 # TODO: replace with kornia functions
 class CenterOfMass(nn.Module):
-    def __init__(self, half_size=1.):
-        '''Computes spatial argmaxes from featuremaps
+    def __init__(self, half_size=1.0):
+        """Computes spatial argmaxes from featuremaps
 
         Args:
             half_size: Half of the square domain size.
-        '''
+        """
         super().__init__()
-        self.half_size=nn.Parameter(torch.tensor(half_size, requires_grad=True, dtype=torch.float32))
-        self.position_code : Optional[Tensor] = None # Filled in forward()
+        self.half_size = nn.Parameter(
+            torch.tensor(half_size, requires_grad=True, dtype=torch.float32)
+        )
+        self.position_code: Optional[Tensor] = None  # Filled in forward()
 
     def forward(self, x):
         B, H, W = x.shape
-        p = torch.empty((2,H,W), dtype=torch.float32, device=x.device, requires_grad=False)
+        p = torch.empty((2, H, W), dtype=torch.float32, device=x.device, requires_grad=False)
         # Positions include the endpoints.
-        p[0,...] = torch.linspace(-1., 1., W, device=x.device)[None,:]
-        p[1,...] = torch.linspace(-1., 1., H, device=x.device)[:,None]
+        p[0, ...] = torch.linspace(-1.0, 1.0, W, device=x.device)[None, :]
+        p[1, ...] = torch.linspace(-1.0, 1.0, H, device=x.device)[:, None]
         self.position_code = p
-        mean = self.half_size * torch.sum(x[:,None,:,:] * p[None,...], dim=[2,3])
+        mean = self.half_size * torch.sum(x[:, None, :, :] * p[None, ...], dim=[2, 3])
         return mean
 
 
 # TODO: replace with kornia functions
 class CenterOfMassAndStd(CenterOfMass):
-    def __init__(self, eps = 1.e-4, half_size=1.):
+    def __init__(self, eps=1.0e-4, half_size=1.0):
         super().__init__(half_size)
         self._eps = eps
 
     def forward(self, x):
         mean = super().forward(x)
-        diff = self.position_code[None,...] - mean[...,None,None]
-        diff_squared = diff*diff # ONNX export does not know operator squared
-        std  = torch.sqrt(torch.sum(x[:,None,:,:]*diff_squared, dim=[2,3])+self._eps)
+        diff = self.position_code[None, ...] - mean[..., None, None]
+        diff_squared = diff * diff  # ONNX export does not know operator squared
+        std = torch.sqrt(torch.sum(x[:, None, :, :] * diff_squared, dim=[2, 3]) + self._eps)
         return mean, std
 
 
 class LocalToGlobalCoordinateOffset(nn.Module):
-    '''
+    """
     There is a scaling, x-y-offset and pitch-offset
-    '''
-    def __init__(self, num_parameter_sets : int = 1):
+    """
+
+    def __init__(self, num_parameter_sets: int = 1):
         super(LocalToGlobalCoordinateOffset, self).__init__()
         # Parameter meaning: pitch angle, forward-up-translation, scaling
-        self.p = nn.Parameter(torch.zeros((num_parameter_sets,4), requires_grad=True))
+        self.p = nn.Parameter(torch.zeros((num_parameter_sets, 4), requires_grad=True))
 
-    def _compute_trafo(self, rot_repr_class : Type[RotationRepr], set_id : Tensor | None | slice) -> tuple[RotationRepr,Tensor,Tensor]:
+    def _compute_trafo(
+        self, rot_repr_class: Type[RotationRepr], set_id: Tensor | None | slice
+    ) -> tuple[RotationRepr, Tensor, Tensor]:
         if set_id is None:
             set_id = slice(1)
-        quat = rot_repr_class.make_rotate_x(self.p[set_id,1])
-        transl = torch.cat([self.p.new_zeros((*quat.value.shape[:1],1)), self.p[set_id,1:3]], dim=-1)
-        scale = smoothclip0(self.p[set_id,3])
+        quat = rot_repr_class.make_rotate_x(self.p[set_id, 1])
+        transl = torch.cat(
+            [self.p.new_zeros((*quat.value.shape[:1], 1)), self.p[set_id, 1:3]], dim=-1
+        )
+        scale = smoothclip0(self.p[set_id, 3])
         return quat, transl, scale
 
-    def forward(self, quats : RotationRepr, coords : Tensor, set_id : Tensor | None):
-        scale = coords[...,2:]
-        head_center_screenspace = coords[...,:2]
+    def forward(self, quats: RotationRepr, coords: Tensor, set_id: Tensor | None):
+        scale = coords[..., 2:]
+        head_center_screenspace = coords[..., :2]
 
         # pw = (xTh + Rh*(xTl + Rl*pl))
         # -> pw = (xTh + Rh*xTl + Rh*Rl*pl) = (xTh + Rh*xTl) + (Rh*Rl)*pl
         # Tw = xTh + Rh * xTl
         # Rw = Rh * Rl
-        # 
+        #
         # Rh : image based rotation prediction
         # Rl : dataset specific prediction
         # xTh : image based translation prediction
         # xTl : dataset translation offset
 
         # shape: (B,?)
-        offset_quat, offset_transl, offset_scale = self._compute_trafo(type(quats),set_id)
+        offset_quat, offset_transl, offset_scale = self._compute_trafo(type(quats), set_id)
 
-        scale = scale * offset_scale[...,None]
+        scale = scale * offset_scale[..., None]
 
-        pred_quat =quats.mult(offset_quat)
+        pred_quat = quats.mult(offset_quat)
 
-        pos_corr = quats.rotate_points(offset_transl[...,None,:]).squeeze(-2)
-        pos_corr = pos_corr[...,:2]
+        pos_corr = quats.rotate_points(offset_transl[..., None, :]).squeeze(-2)
+        pos_corr = pos_corr[..., :2]
         pos_corr = pos_corr * scale
         screen_pos = pos_corr + head_center_screenspace
-        pred_pos = torch.cat([
-            screen_pos,
-            scale
-        ], axis=-1)
+        pred_pos = torch.cat([screen_pos, scale], axis=-1)
         return (pred_quat, pred_pos)
 
 
 class BlurPool2D(nn.Module):
     r"""Compute blur (anti-aliasing) and downsample a given feature map.
 
-    Copy paste from kornia with addition of channel count specification 
+    Copy paste from kornia with addition of channel count specification
     because onnx has trouble figuring out the kernel size when the size
     depends on the input.
     """
 
-    def __init__(self, kernel_size: tuple[int, int] | int, channels : int, stride: int = 2):
+    def __init__(self, kernel_size: tuple[int, int] | int, channels: int, stride: int = 2):
         super().__init__()
         self.kernel_size = kernel_size
         self.stride = stride
-        self.register_buffer('kernel', get_pascal_kernel_2d(kernel_size, norm=True))
+        self.register_buffer("kernel", get_pascal_kernel_2d(kernel_size, norm=True))
         self.channels = channels
 
     def forward(self, input: Tensor) -> Tensor:
-        return _blur_pool_by_kernel2d(input, self.kernel.repeat((self.channels, 1, 1, 1)), self.stride)
+        return _blur_pool_by_kernel2d(
+            input, self.kernel.repeat((self.channels, 1, 1, 1)), self.stride
+        )
 
 
 def freeze_norm_stats(m):
-    if isinstance(m, (nn.BatchNorm2d, nn.BatchNorm1d, nn.LayerNorm, nn.InstanceNorm1d, nn.InstanceNorm2d)):
-        #print (f"Freezing {str(m)}")
+    if isinstance(
+        m, (nn.BatchNorm2d, nn.BatchNorm1d, nn.LayerNorm, nn.InstanceNorm1d, nn.InstanceNorm2d)
+    ):
+        # print (f"Freezing {str(m)}")
         m.eval()
         for p in m.parameters():
             p.requires_grad = False
 
 
 class GaussianMixture(nn.Module):
-    def __init__(self, weights : Tensor, means : Tensor, cov=Tensor):
+    def __init__(self, weights: Tensor, means: Tensor, cov=Tensor):
         """Initialize
 
         Args:
@@ -229,57 +233,58 @@ class GaussianMixture(nn.Module):
         self.register_buffer("means", means)
         self.register_buffer("scales_inv", cov.rsqrt())
         D = means.shape[-1]
-        self.register_buffer("norm_constant", torch.tensor(0.5*D*np.log(2*np.pi), dtype=weights.dtype))
+        self.register_buffer(
+            "norm_constant", torch.tensor(0.5 * D * np.log(2 * np.pi), dtype=weights.dtype)
+        )
 
     @property
     def n_components(self) -> int:
         return self.weights.shape[0]
 
     @staticmethod
-    def from_sklearn(gmm : sklearn.mixture.GaussianMixture) -> 'GaussianMixture':
+    def from_sklearn(gmm: sklearn.mixture.GaussianMixture) -> "GaussianMixture":
         return GaussianMixture(
-            weights = torch.from_numpy(gmm.weights_),
-            means = torch.from_numpy(gmm.means_),
-            cov = torch.from_numpy(gmm.covariances_)
+            weights=torch.from_numpy(gmm.weights_),
+            means=torch.from_numpy(gmm.means_),
+            cov=torch.from_numpy(gmm.covariances_),
         )
 
     @staticmethod
-    def from_hdf5(f : h5py.Group | str) -> 'GaussianMixture':
+    def from_hdf5(f: h5py.Group | str) -> "GaussianMixture":
         if isinstance(f, str):
-            with h5py.File(f,'r') as file:
+            with h5py.File(f, "r") as file:
                 return GaussianMixture.from_hdf5(file)
         else:
-            assert f.attrs['covariance_type'] == 'diag'
+            assert f.attrs["covariance_type"] == "diag"
             return GaussianMixture(
-                weights = torch.from_numpy(f['weights'][...]),
-                means = torch.from_numpy(f['means'][...]),
-                cov = torch.from_numpy(f['cov'][...])
+                weights=torch.from_numpy(f["weights"][...]),
+                means=torch.from_numpy(f["means"][...]),
+                cov=torch.from_numpy(f["cov"][...]),
             )
 
-    def save_to_hdf5(self, f : h5py.Group, group_name : str | None) -> h5py.Group:
-        '''Save the parameters.
+    def save_to_hdf5(self, f: h5py.Group, group_name: str | None) -> h5py.Group:
+        """Save the parameters.
 
         Returns:
             The created group.
-        '''
+        """
         g = f.create_group(group_name) if group_name is not None else f
-        g.create_dataset('weights', data=self.weights.cpu().numpy())
-        g.create_dataset('means', data=self.means.cpu().numpy())
-        g.create_dataset('cov', data=self.cov.cpu().numpy())
-        g.attrs['covariance_type'] = 'diag'
+        g.create_dataset("weights", data=self.weights.cpu().numpy())
+        g.create_dataset("means", data=self.means.cpu().numpy())
+        g.create_dataset("cov", data=self.cov.cpu().numpy())
+        g.attrs["covariance_type"] = "diag"
         return g
 
-
-    def forward(self, x : Tensor):
+    def forward(self, x: Tensor):
         """Evaluate the log likelihood.
-        
+
         Args:
             x: Shape (...,D)
         """
         # Adds the component dimension to x.
-        delta : Tensor = x[...,None,:] - self.means
-        scales_inv : Tensor = self.scales_inv
+        delta: Tensor = x[..., None, :] - self.means
+        scales_inv: Tensor = self.scales_inv
         weight_term = torch.log(self.weights)
-        exponential_term = -0.5*(delta * scales_inv).square().sum(dim=-1)
+        exponential_term = -0.5 * (delta * scales_inv).square().sum(dim=-1)
         normalization_term = torch.log(scales_inv).sum(dim=-1) - self.norm_constant
-        return torch.logsumexp(weight_term + exponential_term + normalization_term,dim=-1)
+        return torch.logsumexp(weight_term + exponential_term + normalization_term, dim=-1)

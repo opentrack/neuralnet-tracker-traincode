@@ -20,8 +20,12 @@ from trackertraincode.neuralnets.torchquaternion import (
 
 
 _rotation_vals = Rotation.concatenate(
-        [Rotation.random(num=100), Rotation.identity(num=1), Rotation.from_rotvec([[np.pi, 0.0, 0.0],[0.0, np.pi, 0.0],[0.0, 0.0, np.pi]])]
-    )
+    [
+        Rotation.random(num=100),
+        Rotation.identity(num=1),
+        Rotation.from_rotvec([[np.pi, 0.0, 0.0], [0.0, np.pi, 0.0], [0.0, 0.0, np.pi]]),
+    ]
+)
 
 
 def test_quaternions():
@@ -68,27 +72,29 @@ def test_quaternions():
     assert np.allclose((rots.inv() * rot_test).magnitude(), (rots2.inv() * rot_test).magnitude())
     assert np.allclose((rots.inv() * rot_test).magnitude(), 0.5 * (rots.inv() * rots2).magnitude())
 
-    angle_difference = geodesicdistance(torch.from_numpy(rots.as_quat()), torch.from_numpy(rots2.as_quat()))
+    angle_difference = geodesicdistance(
+        torch.from_numpy(rots.as_quat()), torch.from_numpy(rots2.as_quat())
+    )
     expected_angle_diff = (rots.inv() * rots2).magnitude()
     assert np.allclose(angle_difference, expected_angle_diff)
 
 
-@pytest.mark.parametrize('rots', [
-    _rotation_vals,
-    _rotation_vals[0],
-])
-def test_quaternion_from_matrix(rots : Rotation):
+@pytest.mark.parametrize(
+    "rots",
+    [
+        _rotation_vals,
+        _rotation_vals[0],
+    ],
+)
+def test_quaternion_from_matrix(rots: Rotation):
     input_mat = rots.as_matrix()
     expected_quat = positivereal(torch.from_numpy(rots.as_quat()))
     output_quat = from_matrix(torch.from_numpy(input_mat))
-    np.testing.assert_allclose(expected_quat.numpy(), output_quat.numpy(), rtol=1.e-6, atol=1.e-6)
+    np.testing.assert_allclose(expected_quat.numpy(), output_quat.numpy(), rtol=1.0e-6, atol=1.0e-6)
 
 
-@pytest.mark.parametrize('rots', [
-    _rotation_vals,
-    _rotation_vals[0]
-])
-def test_from_matrix_backprop(rots : Rotation):
+@pytest.mark.parametrize("rots", [_rotation_vals, _rotation_vals[0]])
+def test_from_matrix_backprop(rots: Rotation):
     torch.autograd.set_detect_anomaly(True)
     mat = torch.from_numpy(rots.as_matrix()).to(torch.float32)
     mat.requires_grad = True
@@ -96,8 +102,8 @@ def test_from_matrix_backprop(rots : Rotation):
     q.sum().backward()
 
     assert mat.grad is not None
-    #print (mat.grad.abs().mean())
-    assert torch.isfinite(mat.grad).all()   
+    # print (mat.grad.abs().mean())
+    assert torch.isfinite(mat.grad).all()
 
 
 def _export_func(model, inputs, filename):
@@ -123,7 +129,10 @@ def test_quaternion_mult_onnx_export(tmp_path):
     p = torch.from_numpy(Rotation.random(10).as_quat())
 
     _export_func(
-        Model(), (q, p), tmp_path / 'mult_model.onnx'  # model being run  # model input (or a tuple for multiple inputs)
+        Model(),
+        (q, p),
+        tmp_path
+        / "mult_model.onnx",  # model being run  # model input (or a tuple for multiple inputs)
     )
 
 
@@ -138,7 +147,7 @@ def test_quaternion_rotate_onnx_export(tmp_path):
     _export_func(
         Model(),  # model being run
         (q, p),  # model input (or a tuple for multiple inputs)
-        tmp_path / 'rotate_model.onnx',
+        tmp_path / "rotate_model.onnx",
     )
 
 
@@ -152,7 +161,7 @@ def test_quaternion_from_matrix_onnx_export(tmp_path):
     _export_func(
         Model(),  # model being run
         (m,),  # model input (or a tuple for multiple inputs)
-        tmp_path / 'from_matrix_model.onnx',
+        tmp_path / "from_matrix_model.onnx",
     )
 
 
@@ -167,4 +176,4 @@ def test_loss():
     np.testing.assert_allclose(loss.numpy(), 0.5 * (1.0 - np.cos(delta)), atol=1.0e-6)
 
     # pyplot.scatter(delta, loss)
-    # pyplot.show() 
+    # pyplot.show()

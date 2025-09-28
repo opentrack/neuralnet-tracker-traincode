@@ -1,4 +1,4 @@
 [tool.black]
-line-length = 120
-skip-string-normalization = true
+line-length = 100
+skip-string-normalization = false
 target-version = ['py311']

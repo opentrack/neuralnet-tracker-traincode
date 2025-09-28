@@ -84,8 +84,8 @@ SPHERE_POINTS = rnd.normal(
 SPHERE_POINTS = SPHERE_POINTS / np.linalg.norm(SPHERE_POINTS, axis=1, keepdims=True)
 del rnd
 
-VIDEOS_DIR = 'hdVideos'
-SHRINKED_VIDEOS_DIR = 'hdVideosShrinked'
+VIDEOS_DIR = "hdVideos"
+SHRINKED_VIDEOS_DIR = "hdVideosShrinked"
 
 
 def as_hpb(rot):
@@ -204,7 +204,9 @@ class Camera:
         cam = self.json_data
         shape_prefix = points.shape[:-1]
         points = np.reshape(points[..., :3], (-1, 3))
-        proj = project_points_weak_perspective(points.T, ref_point, cam["K"], cam["R"], cam["t"], cam["distCoef"]).T
+        proj = project_points_weak_perspective(
+            points.T, ref_point, cam["K"], cam["R"], cam["t"], cam["distCoef"]
+        ).T
         return np.reshape(proj, (*shape_prefix, 3))
 
     def project_pose(self, pose: Pose) -> Pose:
@@ -218,7 +220,9 @@ class Camera:
         # The other vectors are slightly offset in the direction of the camera axes.
         p = pose.t[None, :] + eps * np.pad(crot.T, [(0, 0), (0, 1)]).T
         p = projectPoints(p.T, cam["K"], cam["R"], cam["t"], cam["distCoef"]).T
-        mask = (p[..., 0] > 0) & (p[..., 1] > 0) & (p[..., 0] < self.width) & (p[..., 1] < self.height)
+        mask = (
+            (p[..., 0] > 0) & (p[..., 1] > 0) & (p[..., 0] < self.width) & (p[..., 1] < self.height)
+        )
         pose_z_coord = (crot @ pose.t[:, None] + cam["t"])[2, 0]
         is_in_frustum = np.all(mask) & (pose_z_coord > pose.size)
         proj_center = p[-1, :]
@@ -323,7 +327,8 @@ class Body:
         skull_radius = 0.5 * np.average(np.linalg.norm(ref_points - skull_center, axis=-1))
         face_points_visible = np.all(np.any(self.face_points_visibility[:, FACE_NOT_CHIN], axis=0))
         points_in_face_area = np.all(
-            np.linalg.norm(self.face_points[FACE_NOT_CHIN, :] - skull_center, axis=-1) < 3 * skull_radius
+            np.linalg.norm(self.face_points[FACE_NOT_CHIN, :] - skull_center, axis=-1)
+            < 3 * skull_radius
         )
 
         skeleton_points_are_confident = np.all(self.points[[LEYE, REYE, LEAR, REAR, NOSE], 3] > 0.1)
@@ -331,9 +336,16 @@ class Body:
         lear, rear = self.points[[LEAR, REAR], :3]
         x_axis_by_landmarks = lear - rear
         x_axis = self.head_pose.rot.as_matrix()[:, 0]
-        x_axis_is_aligned = np.inner(x_axis, x_axis_by_landmarks) > 0.8 * np.linalg.norm(x_axis_by_landmarks)
+        x_axis_is_aligned = np.inner(x_axis, x_axis_by_landmarks) > 0.8 * np.linalg.norm(
+            x_axis_by_landmarks
+        )
 
-        return face_points_visible and points_in_face_area and skeleton_points_are_confident and x_axis_is_aligned
+        return (
+            face_points_visible
+            and points_in_face_area
+            and skeleton_points_are_confident
+            and x_axis_is_aligned
+        )
 
     def __head_pose(self, rot: Rotation):
         l, r = self.points[[LEYE, REYE], :3]
@@ -349,7 +361,9 @@ class Body:
         l, r = self.points[[LEAR, REAR], :3]
         size = 0.5 * np.linalg.norm(l - r)
         # size = np.asarray([size,size*FACE_SIZE_FACTOR,size*FACE_SIZE_FACTOR])
-        vertices2 = size * self.head_pose.rot.apply(SPHERE_POINTS + np.asarray([0.0, 0.25, 0.0])) + center
+        vertices2 = (
+            size * self.head_pose.rot.apply(SPHERE_POINTS + np.asarray([0.0, 0.25, 0.0])) + center
+        )
         vertices1 = self.head_pose.size * self.head_pose.rot.apply(FACE_VERTICES) + self.head_pose.t
         return np.concatenate([vertices1, vertices2])
 
@@ -390,7 +404,9 @@ class Bodies:
         with open(fn) as f:
             landmarks = dict(self.__parse_face(json.load(f)))
 
-        self.individuals: list[str] = list(set(skeletons.keys()) & set(face_fits.keys()) & set(landmarks.keys()))
+        self.individuals: list[str] = list(
+            set(skeletons.keys()) & set(face_fits.keys()) & set(landmarks.keys())
+        )
         self.bodies = {
             id: Body(
                 id,
@@ -416,7 +432,9 @@ class Bodies:
             if not maybe_face_hdr.startswith("Face"):
                 continue
             individual = int(lines[i - 5].strip())
-            mrot = Rotation.from_rotvec(np.asarray([float(v.strip()) for v in lines[i + 2].split()]))
+            mrot = Rotation.from_rotvec(
+                np.asarray([float(v.strip()) for v in lines[i + 2].split()])
+            )
             yield individual, mrot
 
     def __parse_face(self, json_face: dict[Any, Any]):
@@ -460,19 +478,22 @@ class PanopticSequence:
         if not path.is_dir():
             raise ValueError(f"Sequence {self.directory} is missing the hd pose dir")
         body_frames = set(
-            int(self.re_extract_body_frame_num.match(abspath.name).group(1)) for abspath in path.iterdir()
+            int(self.re_extract_body_frame_num.match(abspath.name).group(1))
+            for abspath in path.iterdir()
         )
         path = self.directory / "meshTrack_face"
         if not path.is_dir():
             raise ValueError(f"Sequence {self.directory} is missing the meshTrack_face dir")
         face_track_frames = set(
-            int(self.re_extract_face_track_frame_num.match(abspath.name).group(1)) for abspath in path.iterdir()
+            int(self.re_extract_face_track_frame_num.match(abspath.name).group(1))
+            for abspath in path.iterdir()
         )
         path = self.directory / "hdFace3d"
         if not path.is_dir():
             raise ValueError(f"Sequence {self.directory} is missing the hdFace3d dir")
         landmark_frames = set(
-            int(self.re_extract_landmark_frame_num.match(abspath.name).group(1)) for abspath in path.iterdir()
+            int(self.re_extract_landmark_frame_num.match(abspath.name).group(1))
+            for abspath in path.iterdir()
         )
         framelist = list(body_frames.intersection(face_track_frames).intersection(landmark_frames))
         assert framelist, f"Label files missing in {self.directory}"
@@ -571,7 +592,9 @@ class ImageExtractor:
 
     def _extract_single_to_file(self, sequence_dir: str | Path, hdframe_id: int, camera_id: int):
         panel = 0
-        video_fn = self._root / Path(sequence_dir) / self._viddir / f"hd_{panel:02}_{camera_id:02}.mp4"
+        video_fn = (
+            self._root / Path(sequence_dir) / self._viddir / f"hd_{panel:02}_{camera_id:02}.mp4"
+        )
         frame_fn = self._ensure_frames_dir(sequence_dir, camera_id) / f"{hdframe_id:08}.jpg"
         out, _ = (
             ffmpeg.input(video_fn)
@@ -582,7 +605,9 @@ class ImageExtractor:
 
     def probe_video_info(self, sequence_dir: str | Path, camera_id: int):
         panel = 0
-        video_fn = self._root / Path(sequence_dir) / self._viddir / f"hd_{panel:02}_{camera_id:02}.mp4"
+        video_fn = (
+            self._root / Path(sequence_dir) / self._viddir / f"hd_{panel:02}_{camera_id:02}.mp4"
+        )
         if not video_fn.exists():
             raise RuntimeError(f"Video missing: {video_fn}")
         probe = ffmpeg.probe(video_fn)
@@ -601,7 +626,9 @@ class ImageExtractor:
             max_num_frames = nb_frames
 
         panel = 0
-        video_fn = self._root / Path(sequence_dir) / self._viddir / f"hd_{panel:02}_{camera_id:02}.mp4"
+        video_fn = (
+            self._root / Path(sequence_dir) / self._viddir / f"hd_{panel:02}_{camera_id:02}.mp4"
+        )
         print("Streaming video: ", video_fn)
         process1 = (
             ffmpeg.input(video_fn)
@@ -770,7 +797,9 @@ def iterate_crops(
     cam = panseq.cameras[HDCAM_ID, cam_id]
     nb_frames, _, _ = extractor.probe_video_info(sequence_dir, cam.id)
     max_num_frames = min(nb_frames, max_num_frames) if max_num_frames is not None else nb_frames
-    for frame_num, frame_img in enumerate(extractor.stream_frames(sequence_dir, cam.id, max_num_frames=max_num_frames)):
+    for frame_num, frame_img in enumerate(
+        extractor.stream_frames(sequence_dir, cam.id, max_num_frames=max_num_frames)
+    ):
         if (not frame_num in labeled_frame_ids) or (not (frame_num % every == 0)):
             continue
         bodies = panseq.get_body_pose_data(frame_num)
@@ -784,7 +813,11 @@ def iterate_crops(
 
 
 def write_dataset_piece(
-    out_fn: str | Path, sequence_dir: str | Path, cam_id: int, max_num_frames: int | None, use_shrinked_videos: bool
+    out_fn: str | Path,
+    sequence_dir: str | Path,
+    cam_id: int,
+    max_num_frames: int | None,
+    use_shrinked_videos: bool,
 ):
     CachedPanopticSequence(
         sequence_dir
@@ -814,14 +847,18 @@ def write_dataset_piece(
         individuals.append(individual)
         frame_nums.append(frame_num)
 
-    quats, rects, xy, sizes, landmarks = map(lambda x: np.stack(x, axis=0), [quats, rects, xy, sizes, landmarks])
+    quats, rects, xy, sizes, landmarks = map(
+        lambda x: np.stack(x, axis=0), [quats, rects, xy, sizes, landmarks]
+    )
     images = np.asarray(images, dtype=object)
-    individuals = np.asarray(individuals, dtype='i1')
-    frame_nums = np.asarray(frame_nums, 'i4')
+    individuals = np.asarray(individuals, dtype="i1")
+    frame_nums = np.asarray(frame_nums, "i4")
     xys = np.concatenate([xy, sizes[:, None]], axis=-1)
     N = len(images)
 
-    order = np.argsort(frame_nums.astype(np.int64) + np.amax(frame_nums) * individuals.astype(np.int64))
+    order = np.argsort(
+        frame_nums.astype(np.int64) + np.amax(frame_nums) * individuals.astype(np.int64)
+    )
     quats, rects, xys, landmarks, images, individuals, frame_nums = map(
         lambda x: x[order], [quats, rects, xys, landmarks, images, individuals, frame_nums]
     )
@@ -837,13 +874,18 @@ def write_dataset_piece(
         create_pose_dataset(f, FieldCategory.general, name="individual", data=individuals)
         f.create_dataset("frame", data=frame_nums)
         f.create_dataset(
-            "sequence", shape=(N,), data=np.asarray([Path(sequence_dir).name.encode("ascii")], dtype="|S32").repeat(N)
+            "sequence",
+            shape=(N,),
+            data=np.asarray([Path(sequence_dir).name.encode("ascii")], dtype="|S32").repeat(N),
         )
         f.create_dataset("cam", shape=(N,), data=np.asarray([cam_id], dtype="i1").repeat(N))
 
 
 def write_dataset_pieces(
-    out_dir: str | Path, sequence_dirs: list[str | Path], max_num_frames: int | None, use_shrinked_videos: bool
+    out_dir: str | Path,
+    sequence_dirs: list[str | Path],
+    max_num_frames: int | None,
+    use_shrinked_videos: bool,
 ):
     os.makedirs(out_dir, exist_ok=True)
     for sequence_dir in sequence_dirs:
@@ -954,30 +996,44 @@ def shrink_videos(directories: list[str]):
     for directory in directories:
         directory = Path(directory)
         os.makedirs(directory / SHRINKED_VIDEOS_DIR, exist_ok=True)
-        for input in (directory / VIDEOS_DIR).glob('*.mp4'):
+        for input in (directory / VIDEOS_DIR).glob("*.mp4"):
             output = directory / SHRINKED_VIDEOS_DIR / input.name
             if output.exists():
                 print("Skipped ", input)
                 continue
             # print(input, output)
             subprocess.check_call(
-                ['ffmpeg', '-i', input, '-c:v', 'libx264', '-b:v', '4M', '-pass', '1', '-an', '-f', 'null', '/dev/null']
+                [
+                    "ffmpeg",
+                    "-i",
+                    input,
+                    "-c:v",
+                    "libx264",
+                    "-b:v",
+                    "4M",
+                    "-pass",
+                    "1",
+                    "-an",
+                    "-f",
+                    "null",
+                    "/dev/null",
+                ]
             )
             subprocess.check_call(
                 [
-                    'ffmpeg',
-                    '-i',
+                    "ffmpeg",
+                    "-i",
                     input,
-                    '-c:v',
-                    'libx264',
-                    '-b:v',
-                    '4M',
-                    '-pass',
-                    '2',
-                    '-minrate',
-                    '1M',
-                    '-maxrate',
-                    '8M',
+                    "-c:v",
+                    "libx264",
+                    "-b:v",
+                    "4M",
+                    "-pass",
+                    "2",
+                    "-minrate",
+                    "1M",
+                    "-maxrate",
+                    "8M",
                     output,
                 ]
             )
@@ -1003,17 +1059,25 @@ if __name__ == "__main__":
     create_piece_parser.add_argument("cam", type=int)
     create_piece_parser.add_argument("output")
     create_piece_parser.add_argument("-n", type=int, default=None)
-    create_piece_parser.add_argument('--sv', action='store_true', default=False, help="Use shrinked videos")
+    create_piece_parser.add_argument(
+        "--sv", action="store_true", default=False, help="Use shrinked videos"
+    )
     create_piece_parser.set_defaults(
-        func=lambda args: write_dataset_piece(args.output, args.sequence_root, args.cam, args.n, args.sv)
+        func=lambda args: write_dataset_piece(
+            args.output, args.sequence_root, args.cam, args.n, args.sv
+        )
     )
 
     create_all_parser = subparsers.add_parser("create-pieces")
     create_all_parser.add_argument("roots", nargs="*")
     create_all_parser.add_argument("output")
     create_all_parser.add_argument("-n", type=int, default=None)
-    create_all_parser.add_argument('--sv', action='store_true', default=False, help="Use shrinked videos")
-    create_all_parser.set_defaults(func=lambda args: write_dataset_pieces(args.output, args.roots, args.n, args.sv))
+    create_all_parser.add_argument(
+        "--sv", action="store_true", default=False, help="Use shrinked videos"
+    )
+    create_all_parser.set_defaults(
+        func=lambda args: write_dataset_pieces(args.output, args.roots, args.n, args.sv)
+    )
 
     shrink_videos_parser = subparsers.add_parser("shrink-videos")
     shrink_videos_parser.add_argument("directories", nargs="*")

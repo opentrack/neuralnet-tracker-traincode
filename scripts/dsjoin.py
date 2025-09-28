@@ -15,7 +15,9 @@ def _batched_copy(dst, src, dst_offset=0):
     n = min(dst.shape[0] + dst_offset, src.shape[0])
     for a in range(0, n, bs):
         b = min(n, a + bs)
-        dst[a + dst_offset : b + dst_offset, ...] = src[a:b, ...]  # Buffer in memory, then write. This works ...
+        dst[a + dst_offset : b + dst_offset, ...] = src[
+            a:b, ...
+        ]  # Buffer in memory, then write. This works ...
 
 
 def concatenating_join(name1: str, items: Sequence[h5py.Dataset], fout: h5py.File):
@@ -24,7 +26,9 @@ def concatenating_join(name1: str, items: Sequence[h5py.Dataset], fout: h5py.Fil
     N = sum(sizes)
     print(f"Copying {name1}: {sizes} items of type {first.dtype}")
 
-    dst = fout.create_dataset_like(name1, first, shape=(N, *first.shape[1:]), maxshape=(N,) + first.shape[1:])
+    dst = fout.create_dataset_like(
+        name1, first, shape=(N, *first.shape[1:]), maxshape=(N,) + first.shape[1:]
+    )
     assert all(list(first.attrs.items()) == list(ds.attrs.items()) for ds in items)
     copy_attributes(first, dst)
     try:

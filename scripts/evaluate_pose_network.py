@@ -5,7 +5,7 @@
 # See https://github.com/pytorch/pytorch/issues/67864
 import torch.multiprocessing
 
-torch.multiprocessing.set_sharing_strategy('file_system')
+torch.multiprocessing.set_sharing_strategy("file_system")
 
 from typing import Any, List, NamedTuple, Tuple, Dict, Callable, Literal
 import numpy as np
@@ -47,7 +47,7 @@ class RoiConfig(NamedTuple):
     use_head_roi: bool = True
 
     def __str__(self):
-        crop = ['ROI', 'CC'][self.center_crop]
+        crop = ["ROI", "CC"][self.center_crop]
         return f'{"(H_roi)" if self.use_head_roi else "(F_roi)"}{crop}{self.expansion_factor:0.1f}'
 
 
@@ -66,7 +66,7 @@ comprehensive_roi_configs = [
 
 def determine_roi(sample: Batch, use_center_crop: bool):
     if not use_center_crop:
-        return sample['roi']
+        return sample["roi"]
     w, h = sample.meta.image_wh
     return torch.tensor([0, 0, h, w], dtype=torch.float32)
 
@@ -74,7 +74,7 @@ def determine_roi(sample: Batch, use_center_crop: bool):
 EvalResults = Dict[str, Tensor]
 BatchPerspectiveCorrector = Callable[[Tensor, EvalResults], EvalResults]
 
-AlignmentScheme = Literal['perspective', 'opal23', 'none']
+AlignmentScheme = Literal["perspective", "opal23", "none"]
 
 
 class DrawPredictionsWithHistory:
@@ -91,11 +91,11 @@ class DrawPredictionsWithHistory:
     def __call__(self, gt_pred: Tuple[Batch, Dict[str, Tensor]]):
         gt, _ = gt_pred
         try:
-            individual = gt['individual'].item()
+            individual = gt["individual"].item()
         except KeyError:
             individual = "unkown"
-        self.index_by_individual[individual].append(gt['index'].item())
-        self.samples_chronologically.append(gt['index'].item())
+        self.index_by_individual[individual].append(gt["index"].item())
+        self.samples_chronologically.append(gt["index"].item())
         return vis.draw_prediction(gt_pred)
 
 
@@ -107,24 +107,24 @@ def interleaved(a, b):
 
 
 class TableBuilder:
-    data_name_table = {'aflw2k3d': 'AFLW 2k 3d', 'aflw2k3d_grimaces': 'grimaces'}
+    data_name_table = {"aflw2k3d": "AFLW 2k 3d", "aflw2k3d_grimaces": "grimaces"}
 
     def __init__(self):
         # Position and size errors are measured relative to the ROI size. Hence in percent.
         self._header = [
-            'Data',
-            'Pitch°',
-            'Yaw°',
-            'Roll°',
-            'Mean°',
-            'Geodesic°',
-            'XY%',
-            'S%',
-            'NME3d%',
-            'NME2d%_30',
-            'NME2d%_60',
-            'NME2d%_90',
-            'NME2d%_avg',
+            "Data",
+            "Pitch°",
+            "Yaw°",
+            "Roll°",
+            "Mean°",
+            "Geodesic°",
+            "XY%",
+            "S%",
+            "NME3d%",
+            "NME2d%_30",
+            "NME2d%_60",
+            "NME2d%_90",
+            "NME2d%_avg",
         ]
         self._entries_by_model = defaultdict(list)
 
@@ -140,11 +140,13 @@ class TableBuilder:
         nme_2d,
         data_aux_string=None,
     ):
-        unweighted_nme_3d = unweighted_nme_3d * 100 if unweighted_nme_3d is not None else 'n/a'
+        unweighted_nme_3d = unweighted_nme_3d * 100 if unweighted_nme_3d is not None else "n/a"
         nme_2d_30, nme_2d_60, nme_2d_90, nme_2d_avg = (
-            ['/na' for _ in range(4)] if nme_2d is None else [x * 100 for x in nme_2d]
+            ["/na" for _ in range(4)] if nme_2d is None else [x * 100 for x in nme_2d]
         )
-        data = self.data_name_table.get(data, data) + (data_aux_string if data_aux_string is not None else '')
+        data = self.data_name_table.get(data, data) + (
+            data_aux_string if data_aux_string is not None else ""
+        )
         self._entries_by_model[model] += [
             [data]
             + euler_angles
@@ -167,8 +169,10 @@ class TableBuilder:
         string_rows = []
         for model, rows in self._entries_by_model.items():
             string_rows += [nicer_model_paths[model]]
-            string_rows += tabulate.tabulate(rows, self._header, tablefmt='github', floatfmt=".2f").splitlines()
-        return '\n'.join(string_rows)
+            string_rows += tabulate.tabulate(
+                rows, self._header, tablefmt="github", floatfmt=".2f"
+            ).splitlines()
+        return "\n".join(string_rows)
 
     def build_json(self) -> str:
         prefix = commonprefix(list(map(os.path.dirname, self._entries_by_model.keys())))
@@ -180,21 +184,27 @@ class TableBuilder:
                     by_header[name].append(value)
             return by_header
 
-        table = {relpath(m, prefix): model_table(rows) for m, rows in self._entries_by_model.items()}
+        table = {
+            relpath(m, prefix): model_table(rows) for m, rows in self._entries_by_model.items()
+        }
         return json.dumps(table, indent=2)
 
 
 def compute_pred_keys(loader: dtr.SampleBySampleLoader, net: eval.InferenceNetwork):
     # Check if model and data support landmark prediction
-    keys = ['coord', 'pose', 'roi']
+    keys = ["coord", "pose", "roi"]
     sample = next(iter(loader))
-    preds = net(torch.zeros((1, 1, net.input_resolution, net.input_resolution), device=net.device_for_input))
-    if 'pt3d_68' in sample and 'pt3d_68' in preds:
-        keys.append('pt3d_68')
+    preds = net(
+        torch.zeros((1, 1, net.input_resolution, net.input_resolution), device=net.device_for_input)
+    )
+    if "pt3d_68" in sample and "pt3d_68" in preds:
+        keys.append("pt3d_68")
     return keys
 
 
-def report(net_filename, data_name, roi_config: RoiConfig, args: argparse.Namespace, builder: TableBuilder):
+def report(
+    net_filename, data_name, roi_config: RoiConfig, args: argparse.Namespace, builder: TableBuilder
+):
     alignment: AlignmentScheme = args.alignment_scheme
 
     loader = trackertraincode.pipelines.make_validation_loader(
@@ -205,31 +215,35 @@ def report(net_filename, data_name, roi_config: RoiConfig, args: argparse.Namesp
     pred_keys = compute_pred_keys(loader, net)
     predictor = eval.Predictor(net, roi_config.expansion_factor)
 
-    metrics = torchmetrics.MetricCollection({'pose_errs': eval.NormalizedXYSError()})
-    if alignment == 'none':
-        metrics.add_metrics({"geodesic_errs": eval.GeodesicError(), 'euler_errs': eval.EulerAngleErrors()})
+    metrics = torchmetrics.MetricCollection({"pose_errs": eval.NormalizedXYSError()})
+    if alignment == "none":
+        metrics.add_metrics(
+            {"geodesic_errs": eval.GeodesicError(), "euler_errs": eval.EulerAngleErrors()}
+        )
     else:
         metrics.add_metrics(
             {
                 "geodesic_errs": eval.AlignedRotationErrorMetric(
-                    error_mode='geo', correction_mode=alignment, fov=BIWI_HORIZONTAL_FOV
+                    error_mode="geo", correction_mode=alignment, fov=BIWI_HORIZONTAL_FOV
                 ),
-                'euler_errs': eval.AlignedRotationErrorMetric(
-                    error_mode='euler', correction_mode=alignment, fov=BIWI_HORIZONTAL_FOV
+                "euler_errs": eval.AlignedRotationErrorMetric(
+                    error_mode="euler", correction_mode=alignment, fov=BIWI_HORIZONTAL_FOV
                 ),
             }
         )
-    if 'pt3d_68' in pred_keys:
-        metrics.add_metrics({'uw_nme_3d': eval.UnweightedKptNME(), 'nme_2d': eval.KptNME(dimensions=2)})
+    if "pt3d_68" in pred_keys:
+        metrics.add_metrics(
+            {"uw_nme_3d": eval.UnweightedKptNME(), "nme_2d": eval.KptNME(dimensions=2)}
+        )
 
     results: dict[str, Tensor] = predictor.evaluate(metrics, loader)
 
-    poseerrs: NDArray[Any] = results['pose_errs'].cpu().numpy()
-    geodesic_errs: NDArray[Any] = results['geodesic_errs'].cpu().numpy()
-    eulererrs: NDArray[Any] = results['euler_errs'].cpu().numpy()
-    if 'pt3d_68' in pred_keys:
-        uw_nme_3d = results['uw_nme_3d'].cpu().numpy()
-        nme_2d = results['nme_2d']
+    poseerrs: NDArray[Any] = results["pose_errs"].cpu().numpy()
+    geodesic_errs: NDArray[Any] = results["geodesic_errs"].cpu().numpy()
+    eulererrs: NDArray[Any] = results["euler_errs"].cpu().numpy()
+    if "pt3d_68" in pred_keys:
+        uw_nme_3d = results["uw_nme_3d"].cpu().numpy()
+        nme_2d = results["nme_2d"]
     else:
         uw_nme_3d = nme_2d = None
 
@@ -244,32 +258,34 @@ def report(net_filename, data_name, roi_config: RoiConfig, args: argparse.Namesp
         geodesic=(np.average(geodesic_errs) * utils.rad2deg).tolist(),
         rmse_pos=(rmse_pos * 100.0).tolist(),
         rmse_size=(rmse_size * 100.0).tolist(),
-        data_aux_string=' / ' + str(roi_config),
+        data_aux_string=" / " + str(roi_config),
         unweighted_nme_3d=np.average(uw_nme_3d) if uw_nme_3d is not None else None,
         nme_2d=nme_2d,
     )
 
-    if args.vis != 'none':
-        quantity = {'kpts': uw_nme_3d, 'rot': geodesic_errs, 'size': e_size}[args.vis]
+    if args.vis != "none":
+        quantity = {"kpts": uw_nme_3d, "rot": geodesic_errs, "size": e_size}[args.vis]
         if quantity is None:
             print(f"Prediction for {args.vis} is not available.")
             return []
 
         order = np.ascontiguousarray(np.argsort(quantity)[::-1])
-        loader = trackertraincode.pipelines.make_validation_loader(data_name, order=order, return_single_samples=True)
+        loader = trackertraincode.pipelines.make_validation_loader(
+            data_name, order=order, return_single_samples=True
+        )
 
         def iter_gt_and_preds():
             for sample in loader:
-                pred = predictor.predict_batch([sample['image']], sample['roi'][None, ...])
+                pred = predictor.predict_batch([sample["image"]], sample["roi"][None, ...])
                 pred = Batch(Metadata(0, batchsize=1), pred)
                 sample = dtr.batch.to_numpy(sample)
                 pred = dtr.batch.to_numpy(pred)
                 # There is only one sample to unpack. Needs to be done though.
                 yield from zip(sample.undo_collate(), pred.undo_collate())
 
-        history = DrawPredictionsWithHistory(data_name + '/' + net_filename)
+        history = DrawPredictionsWithHistory(data_name + "/" + net_filename)
         fig, btn = vis.matplotlib_plot_iterable(iter_gt_and_preds(), history)
-        fig.suptitle(data_name + ' / ' + str(roi_config) + ' / ' + net_filename)
+        fig.suptitle(data_name + " / " + str(roi_config) + " / " + net_filename)
         return [fig, btn, history]
     else:
         return []
@@ -288,36 +304,44 @@ def run(args):
         assert args.roi_expansion is None, "Conflicting arguments"
         roi_configs = comprehensive_roi_configs
 
-    datasets = args.ds.split('+')
+    datasets = args.ds.split("+")
     for net_filename in args.filenames:
         for name in datasets:
             for roi_config in roi_configs:
                 gui += report(net_filename, name, roi_config, args, table_builder)
     if args.json:
         print(f"writing {args.json}")
-        with open(args.json, 'w') as f:
+        with open(args.json, "w") as f:
             f.write(table_builder.build_json())
     else:
         print(table_builder.build())
     pyplot.show()
-    print ("Viewed samples:")
+    print("Viewed samples:")
     for thing in gui:
         if not isinstance(thing, DrawPredictionsWithHistory):
             continue
         thing.print_viewed()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate pose networks")
-    parser.add_argument('filenames', help='filenames of checkpoint or onnx model file', type=str, nargs='*')
     parser.add_argument(
-        '--vis', dest='vis', help='visualization of worst', default='none', choices=['none', 'kpts', 'rot', 'size']
+        "filenames", help="filenames of checkpoint or onnx model file", type=str, nargs="*"
     )
-    parser.add_argument('--device', help='select device: cpu or cuda', default='cuda', type=str)
-    parser.add_argument('--comprehensive-roi', action='store_true', default=False)
-    parser.add_argument('--alignment-scheme', choices=['perspective', 'opal23', 'none'], default='none')
-    parser.add_argument('--roi-expansion', default=None, type=float)
-    parser.add_argument('--json', type=str, default=None)
-    parser.add_argument('--ds', type=str, default='aflw2k3d')
+    parser.add_argument(
+        "--vis",
+        dest="vis",
+        help="visualization of worst",
+        default="none",
+        choices=["none", "kpts", "rot", "size"],
+    )
+    parser.add_argument("--device", help="select device: cpu or cuda", default="cuda", type=str)
+    parser.add_argument("--comprehensive-roi", action="store_true", default=False)
+    parser.add_argument(
+        "--alignment-scheme", choices=["perspective", "opal23", "none"], default="none"
+    )
+    parser.add_argument("--roi-expansion", default=None, type=float)
+    parser.add_argument("--json", type=str, default=None)
+    parser.add_argument("--ds", type=str, default="aflw2k3d")
     args = parser.parse_args()
     run(args)

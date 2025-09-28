@@ -32,61 +32,74 @@ C = FieldCategory
 
 
 def discover_samples(zf):
-    names = frozenset(['AFW', 'HELEN', 'IBUG', 'LFPW'])
+    names = frozenset(["AFW", "HELEN", "IBUG", "LFPW"])
     isInDataSubsets = lambda s: s.split(os.path.sep)[1] in names
     filenames = [
         f.filename
         for f in zf.filelist
-        if (f.external_attr == 0x20 and splitext(f.filename)[1] == '.mat' and isInDataSubsets(f.filename))
+        if (
+            f.external_attr == 0x20
+            and splitext(f.filename)[1] == ".mat"
+            and isInDataSubsets(f.filename)
+        )
     ]
     return sorted(filenames)
 
 
 def remove_artificially_rotated_faces(filenames: List[str]):
-    return list(filter(lambda fn: fn.endswith('_0.mat'), filenames))
+    return list(filter(lambda fn: fn.endswith("_0.mat"), filenames))
 
 
 def remove_original_faces(filenames: List[str]):
-    return list(filter(lambda fn: not fn.endswith('_0.mat'), filenames))
+    return list(filter(lambda fn: not fn.endswith("_0.mat"), filenames))
 
 
 def make_groups(filenames: List[str]):
-    regex = re.compile(r'([\w| ]+)_(\d+).mat')
+    regex = re.compile(r"([\w| ]+)_(\d+).mat")
     d = collections.defaultdict(list)
     for fn in filenames:
         match = regex.match(os.path.basename(fn))
-        assert match is not None, f'Fail to match {fn}'
+        assert match is not None, f"Fail to match {fn}"
         d[match.groups()[0]].append(fn)
     return d
 
 
 def get_landmarks_filename(matfile: str):
     elements = matfile.split(os.path.sep)
-    name = os.path.splitext(elements[-1])[0] + '_pts.mat'
-    return os.path.sep.join(elements[:-2] + ['landmarks'] + elements[-2:-1] + [name])
+    name = os.path.splitext(elements[-1])[0] + "_pts.mat"
+    return os.path.sep.join(elements[:-2] + ["landmarks"] + elements[-2:-1] + [name])
 
 
 class ReadSample:
-    def __init__(self, full_face_bounding_box: bool, load_pt3d_68: bool, load_pt2d_68: bool, load_roi : bool, load_face_params : bool):
+    def __init__(
+        self,
+        full_face_bounding_box: bool,
+        load_pt3d_68: bool,
+        load_pt2d_68: bool,
+        load_roi: bool,
+        load_face_params: bool,
+    ):
         assert not (full_face_bounding_box and load_roi)
         assert load_face_params or load_roi or load_pt3d_68, "Source for BBox"
-        self._headmodel = PosedDeformableHead(ScaledBfmModule(BFMModel())) if full_face_bounding_box else None
+        self._headmodel = (
+            PosedDeformableHead(ScaledBfmModule(BFMModel())) if full_face_bounding_box else None
+        )
         self._load_pt3d_68 = load_pt3d_68
         self._load_pt2d_68 = load_pt2d_68
         self._load_roi = load_roi
         self._load_face_params = load_face_params
         self._required_data = [
-            'Pose_Para',
+            "Pose_Para",
         ]
         if load_pt3d_68:
             # AFLW2k-3d has them. 300W-LP doesn't
-            self._required_data.append('pt3d_68')
+            self._required_data.append("pt3d_68")
         if load_roi:
-            self._required_data.append('roi')
+            self._required_data.append("roi")
         if load_face_params:
             self._required_data += [
-                'Shape_Para',
-                'Exp_Para',
+                "Shape_Para",
+                "Exp_Para",
             ]
 
     def __call__(self, zf, matfile):
@@ -96,10 +109,10 @@ class ReadSample:
             (k in data) for k in self._required_data
         ), f"Data not found in file {matfile}. Contents is {data.keys()}"
 
-        jpgbuffer = zf.read(splitext(matfile)[0] + '.jpg')
+        jpgbuffer = zf.read(splitext(matfile)[0] + ".jpg")
         img = imdecode(jpgbuffer, color=True)
 
-        pitch, yaw, roll, tx, ty, tz, scale = data['Pose_Para'][0]
+        pitch, yaw, roll, tx, ty, tz, scale = data["Pose_Para"][0]
         rot = aflw_rotation_conversion(pitch, yaw, roll)
 
         h, w, _ = img.shape
@@ -119,7 +132,7 @@ class ReadSample:
             f_shp, f_exp = None, None
 
         if self._load_pt3d_68:
-            pt3d = depth_centered_keypoints(data['pt3d_68'])
+            pt3d = depth_centered_keypoints(data["pt3d_68"])
             pt3d[2] *= -1
         elif self._load_face_params:
             # Note: Landmarks in the landmarks folder of 300wlp omit the z-coordinate.
@@ -134,7 +147,7 @@ class ReadSample:
             pt3d = None
 
         if self._load_roi:
-            x0, y0, x1, y1 = data['roi'][0]
+            x0, y0, x1, y1 = data["roi"][0]
             y0 = h - y0
             y1 = h - y1
         elif self._headmodel is None:
@@ -144,7 +157,9 @@ class ReadSample:
         else:
             assert shapeparam is not None
             vertices = self._headmodel(
-                torch.from_numpy(coord), QuatRepr(value=torch.from_numpy(rot.as_quat())), torch.from_numpy(shapeparam)
+                torch.from_numpy(coord),
+                QuatRepr(value=torch.from_numpy(rot.as_quat())),
+                torch.from_numpy(shapeparam),
             ).numpy()
             x0, y0, _ = np.amin(vertices, axis=0)
             x1, y1, _ = np.amax(vertices, axis=0)
@@ -156,17 +171,17 @@ class ReadSample:
             sanity_check_landmarks(coord, rot, pt3d, (f_shp, f_exp), 0.2, img)
 
         output = {
-            'pose': rot.as_quat(),
-            'coord': coord,
-            'roi': roi,
-            'image': np.frombuffer(jpgbuffer, dtype='B'),
+            "pose": rot.as_quat(),
+            "coord": coord,
+            "roi": roi,
+            "image": np.frombuffer(jpgbuffer, dtype="B"),
         }
 
         if pt3d is not None:
-            output['pt3d_68'] = np.ascontiguousarray(pt3d.T)
-        
+            output["pt3d_68"] = np.ascontiguousarray(pt3d.T)
+
         if shapeparam is not None:
-            output['shapeparam'] = shapeparam
+            output["shapeparam"] = shapeparam
 
         if self._load_pt2d_68:
             with io.BytesIO(zf.read(get_landmarks_filename(matfile))) as f:
@@ -174,11 +189,11 @@ class ReadSample:
             if 0:
                 # 2d landmarks are not always applicable since they come from the original image, regardless of the artificial rotation.
                 # ... that is, when taken from the mat file in the main folders.
-                pt2d = data['pt2d']
+                pt2d = data["pt2d"]
             else:
                 # When taken from the landmarkfolder they are good
-                pt2d = landmarkdata['pts_2d']
-            output['pt2d_68'] = np.ascontiguousarray(pt2d)
+                pt2d = landmarkdata["pts_2d"]
+            output["pt2d_68"] = np.ascontiguousarray(pt2d)
 
         return output
 
@@ -195,7 +210,7 @@ class HdfDatasetWriter:
     def generate_hdf5_dataset(self, source_file, outfilename, count):
         read_sample = self.make_sample_reader()
 
-        with zipfile.ZipFile(source_file) as zf, h5py.File(outfilename, 'w') as f:
+        with zipfile.ZipFile(source_file) as zf, h5py.File(outfilename, "w") as f:
             filename_groups = self.get_file_groups(zf)
             assert filename_groups
             grouped_faces = not isinstance(next(iter(filename_groups)), str)
@@ -204,7 +219,7 @@ class HdfDatasetWriter:
             if grouped_faces:
                 sequence_starts = np.cumsum([0] + [len(fs) for fs in filename_groups])
                 N = sequence_starts[-1]
-                f.create_dataset('sequence_starts', data=sequence_starts)
+                f.create_dataset("sequence_starts", data=sequence_starts)
             else:
                 N = len(filename_groups)
 
@@ -212,19 +227,28 @@ class HdfDatasetWriter:
                 filename_groups = cast(list[list[str]], [filename_groups])
 
             sample = read_sample(zf, filename_groups[0][0])
-            have_pt2d_68 = 'pt2d_68' in sample
-            have_shapeparam = 'shapeparam' in sample
+            have_pt2d_68 = "pt2d_68" in sample
+            have_shapeparam = "shapeparam" in sample
 
             ds_img = create_pose_dataset(f, C.image, count=N)
             ds_roi = create_pose_dataset(f, C.roi, count=N)
             ds_quats = create_pose_dataset(f, C.quat, count=N)
             ds_coords = create_pose_dataset(f, C.xys, count=N)
-            ds_pt3d_68 = create_pose_dataset(f, C.points, name='pt3d_68', count=N, shape_wo_batch_dim=(68, 3))
+            ds_pt3d_68 = create_pose_dataset(
+                f, C.points, name="pt3d_68", count=N, shape_wo_batch_dim=(68, 3)
+            )
             if have_pt2d_68:
-                ds_pt2d_68 = create_pose_dataset(f, C.points, name='pt2d_68', count=N, shape_wo_batch_dim=(68, 2))
+                ds_pt2d_68 = create_pose_dataset(
+                    f, C.points, name="pt2d_68", count=N, shape_wo_batch_dim=(68, 2)
+                )
             if have_shapeparam:
                 ds_shapeparams = create_pose_dataset(
-                    f, C.general, name='shapeparams', count=N, shape_wo_batch_dim=(50,), dtype=np.float16
+                    f,
+                    C.general,
+                    name="shapeparams",
+                    count=N,
+                    shape_wo_batch_dim=(50,),
+                    dtype=np.float16,
                 )
 
             i = 0
@@ -232,15 +256,15 @@ class HdfDatasetWriter:
                 for filenames in filename_groups:
                     for fn in filenames:
                         sample = read_sample(zf, fn)
-                        ds_img[i] = sample['image']
-                        ds_quats[i] = sample['pose']
-                        ds_coords[i] = sample['coord']
-                        ds_pt3d_68[i] = sample['pt3d_68']
+                        ds_img[i] = sample["image"]
+                        ds_quats[i] = sample["pose"]
+                        ds_coords[i] = sample["coord"]
+                        ds_pt3d_68[i] = sample["pt3d_68"]
                         if have_pt2d_68:
-                            ds_pt2d_68[i] = sample['pt2d_68']  # type: ignore[reportPossiblyUnboundVariable]
-                        ds_roi[i] = sample['roi']
+                            ds_pt2d_68[i] = sample["pt2d_68"]  # type: ignore[reportPossiblyUnboundVariable]
+                        ds_roi[i] = sample["roi"]
                         if have_shapeparam:
-                            ds_shapeparams[i] = sample['shapeparam']# type: ignore[reportPossiblyUnboundVariable]
+                            ds_shapeparams[i] = sample["shapeparam"]  # type: ignore[reportPossiblyUnboundVariable]
                         i += 1
                         bar.update(1)
 
@@ -258,7 +282,13 @@ class HdfWriter300WLPWithArtificialRotations(HdfDatasetWriter):
         return list(make_groups(filenames).values())
 
     def make_sample_reader(self) -> ReadSample:
-        return ReadSample(self.full_face_bounding_box, load_pt3d_68=False, load_pt2d_68=True, load_roi=False, load_face_params=True)
+        return ReadSample(
+            self.full_face_bounding_box,
+            load_pt3d_68=False,
+            load_pt2d_68=True,
+            load_roi=False,
+            load_face_params=True,
+        )
 
 
 class HdfWriter300WLPWithoutRotations(HdfDatasetWriter):
@@ -271,30 +301,46 @@ class HdfWriter300WLPWithoutRotations(HdfDatasetWriter):
         return list(make_groups(filenames).values())
 
     def make_sample_reader(self) -> ReadSample:
-        return ReadSample(self.full_face_bounding_box, load_pt3d_68=False, load_pt2d_68=True, load_roi=False, load_face_params=True)
+        return ReadSample(
+            self.full_face_bounding_box,
+            load_pt3d_68=False,
+            load_pt2d_68=True,
+            load_roi=False,
+            load_face_params=True,
+        )
 
 
-def generate_hdf5_dataset(source_file, outfilename, count, only_large_poses, full_face_bounding_box):
-    HdfWriter300WLPWithArtificialRotations(only_large_poses, full_face_bounding_box).generate_hdf5_dataset(
+def generate_hdf5_dataset(
+    source_file, outfilename, count, only_large_poses, full_face_bounding_box
+):
+    HdfWriter300WLPWithArtificialRotations(
+        only_large_poses, full_face_bounding_box
+    ).generate_hdf5_dataset(source_file, outfilename, count)
+
+
+def generate_hdf5_dataset_wo_artificial_rotations(
+    source_file, outfilename, count, full_face_bounding_box
+):
+    HdfWriter300WLPWithoutRotations(full_face_bounding_box).generate_hdf5_dataset(
         source_file, outfilename, count
     )
 
 
-def generate_hdf5_dataset_wo_artificial_rotations(source_file, outfilename, count, full_face_bounding_box):
-    HdfWriter300WLPWithoutRotations(full_face_bounding_box).generate_hdf5_dataset(source_file, outfilename, count)
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Convert dataset")
-    parser.add_argument('source', help="source file", type=str)
-    parser.add_argument('destination', help='destination file', type=str, nargs='?', default=None)
-    parser.add_argument('-n', dest='count', type=int, default=None)
-    parser.add_argument('--subset', choices=['large', 'original', 'both'], default='both')
-    parser.add_argument('--reconstruct-head-bbox', default=False, action='store_true')
+    parser.add_argument("source", help="source file", type=str)
+    parser.add_argument("destination", help="destination file", type=str, nargs="?", default=None)
+    parser.add_argument("-n", dest="count", type=int, default=None)
+    parser.add_argument("--subset", choices=["large", "original", "both"], default="both")
+    parser.add_argument("--reconstruct-head-bbox", default=False, action="store_true")
     args = parser.parse_args()
-    dst = args.destination if args.destination else splitext(args.source)[0] + '.h5'
-    if args.subset in ('both', 'large'):
-        generate_hdf5_dataset(args.source, dst, args.count, args.subset == 'large', args.reconstruct_head_bbox)
+    dst = args.destination if args.destination else splitext(args.source)[0] + ".h5"
+    if args.subset in ("both", "large"):
+        generate_hdf5_dataset(
+            args.source, dst, args.count, args.subset == "large", args.reconstruct_head_bbox
+        )
     else:
-        assert args.subset == 'original'
-        generate_hdf5_dataset_wo_artificial_rotations(args.source, dst, args.count, args.reconstruct_head_bbox)
+        assert args.subset == "original"
+        generate_hdf5_dataset_wo_artificial_rotations(
+            args.source, dst, args.count, args.reconstruct_head_bbox
+        )

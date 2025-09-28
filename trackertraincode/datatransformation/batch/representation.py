@@ -11,7 +11,7 @@ from trackertraincode.datasets.batch import Batch
 from trackertraincode.datasets.dshdf5pose import FieldCategory
 
 
-def to_numpy(batch : Batch):
+def to_numpy(batch: Batch):
     """Convert batch from tensor to numpy array"""
     batch = copy(batch)
     for k, v in batch.items():
@@ -19,7 +19,7 @@ def to_numpy(batch : Batch):
     return batch
 
 
-def to_tensor(batch : Batch):
+def to_tensor(batch: Batch):
     """Convert ndarrays in sample to Tensors."""
     batch = copy(batch)
     for k, v in batch.items():

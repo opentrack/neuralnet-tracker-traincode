@@ -1,9 +1,9 @@
-'''
+"""
 Quaternion functions compatible with scipy.
 
 The real component comes last which makes it compatible to the scipy convention.
 pytorch3d and kornia are different.
-'''
+"""
 
 from typing import Union, Final
 import numpy as np
@@ -95,9 +95,9 @@ def from_matrix(m: Tensor):
     # See https://en.wikipedia.org/wiki/Rotation_matrix#Quaternion
     # Also inspired by
     # https://pytorch3d.readthedocs.io/en/latest/_modules/pytorch3d/transforms/rotation_conversions.html#matrix_to_quaternion
-    assert m.shape[-2:] == (3,3)
+    assert m.shape[-2:] == (3, 3)
     shape = m.shape[:-2]
-    m = m.reshape((-1,3,3))
+    m = m.reshape((-1, 3, 3))
 
     # 4 possibilties to compute the quaternion. Unstable computation with divisions
     # by zero or close to zero can occur. Further down, the best conditioned solution
@@ -113,7 +113,7 @@ def from_matrix(m: Tensor):
             device=m.device,
             dtype=m.dtype,
         ),
-        m[:,[0,1,2],[0,1,2],None]
+        m[:, [0, 1, 2], [0, 1, 2], None],
         # Note: the code below with "diagonal" creates some weird onnx export with a conditional operator.
         # torch.diagonal(m, dim1=-2, dim2=-1)[...,None],
     )
@@ -123,9 +123,15 @@ def from_matrix(m: Tensor):
     idx1 = [1, 2, 1, 0, 1, 1, 2, 1, 0, 2, 0, 1]
     idx2 = [0, 0, 2, 2, 0, 2, 1, 0, 2, 1, 2, 0]
     signs = torch.as_tensor(
-        [-1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0], dtype=m.dtype, device=m.device
+        [-1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0],
+        dtype=m.dtype,
+        device=m.device,
     )
-    quat_vals = 0.25 * (m[:, idx1, idx2] + signs * m[:, idx2, idx1]) / qx_from_x.repeat_interleave(3, dim=-1)
+    quat_vals = (
+        0.25
+        * (m[:, idx1, idx2] + signs * m[:, idx2, idx1])
+        / qx_from_x.repeat_interleave(3, dim=-1)
+    )
 
     (
         qw_from_k,

@@ -3,7 +3,19 @@ from matplotlib import pyplot
 from collections import namedtuple, defaultdict
 import numpy as np
 from os.path import join, isdir
-from typing import Any, Dict, List, Sequence, Tuple, Union, Optional, Callable, NamedTuple, Mapping, Protocol
+from typing import (
+    Any,
+    Dict,
+    List,
+    Sequence,
+    Tuple,
+    Union,
+    Optional,
+    Callable,
+    NamedTuple,
+    Mapping,
+    Protocol,
+)
 import tqdm
 import multiprocessing
 import queue
@@ -33,7 +45,7 @@ class LossVal(NamedTuple):
 
 
 def concatenated_lossvals_by_name(vals: list[LossVal]):
-    '''Sorts by name and concatenates.
+    """Sorts by name and concatenates.
 
     Assumes that names can occur multiple times. Then corresponding weights and
     values are concatenated. Useful for concatenating the loss terms from different
@@ -41,7 +53,7 @@ def concatenated_lossvals_by_name(vals: list[LossVal]):
 
     Return:
         Dict[name,(values,weights)]
-    '''
+    """
     value_lists = defaultdict(list)
     weight_lists = defaultdict(list)
     for v in vals:
@@ -68,8 +80,8 @@ class Criterion(NamedTuple):
 
 
 class CriterionGroup(NamedTuple):
-    criterions: List[Union['CriterionGroup', Criterion]]
-    name: str = ''
+    criterions: List[Union["CriterionGroup", Criterion]]
+    name: str = ""
     w: Union[float, Callable[[int], float]] = 1.0
 
     def _eval_weight(self, step):
@@ -97,7 +109,9 @@ class TrainHistoryPlotter(object):
     def __init__(self, save_filename=None):
         self.histories = defaultdict(History)
         self.queue = multiprocessing.Queue(maxsize=100)
-        self.plotting = multiprocessing.Process(None, self.run_plotting, args=(self.queue, save_filename))
+        self.plotting = multiprocessing.Process(
+            None, self.run_plotting, args=(self.queue, save_filename)
+        )
         self.plotting.start()
 
     @staticmethod
@@ -143,30 +157,32 @@ class TrainHistoryPlotter(object):
 
     @staticmethod
     def update_actual_graphs(histories, fig, axes, num_rows):
-        fig, axes, num_rows = TrainHistoryPlotter.ensure_axes_are_ready(fig, axes, num_rows, histories)
+        fig, axes, num_rows = TrainHistoryPlotter.ensure_axes_are_ready(
+            fig, axes, num_rows, histories
+        )
         for ax, (name, history) in zip(axes, histories.items()):
-            if name == 'lr':
+            if name == "lr":
                 t, lr = np.array(history.test).T
-                ax.plot(t, lr, label='lr', marker='o', color='k')
-                ax.set(yscale='log')
-                ax.grid(axis='y', which='both')
+                ax.plot(t, lr, label="lr", marker="o", color="k")
+                ax.set(yscale="log")
+                ax.grid(axis="y", which="both")
                 ax.legend()
-            elif name == '|grad L|':
+            elif name == "|grad L|":
                 t, x, xerr = np.array(history.train).T
-                ax.errorbar(t, x, yerr=xerr, color='k', label=name)
-                ax.set(yscale='log')
-                ax.grid(axis='y', which='both')
+                ax.errorbar(t, x, yerr=xerr, color="k", label=name)
+                ax.set(yscale="log")
+                ax.grid(axis="y", which="both")
                 ax.legend()
             else:
                 if history.train:
                     t, x, xerr = np.array(history.train).T
-                    ax.errorbar(t, x, yerr=xerr, label=name, color='r')
+                    ax.errorbar(t, x, yerr=xerr, label=name, color="r")
                 if history.test:
-                    ax.plot(*np.array(history.test).T, label='test ' + name, marker='x', color='b')
+                    ax.plot(*np.array(history.test).T, label="test " + name, marker="x", color="b")
                 # FIXME: Hack with `startswith('nll')`
-                if history.logplot and (not name.startswith('nll')) and (not name == 'loss'):
-                    ax.set(yscale='log')
-                ax.grid(axis='y', which='both')
+                if history.logplot and (not name.startswith("nll")) and (not name == "loss"):
+                    ax.set(yscale="log")
+                ax.grid(axis="y", which="both")
                 ax.legend()
         pyplot.tight_layout()
         return fig, axes, num_rows
@@ -177,9 +193,13 @@ class TrainHistoryPlotter(object):
         fig, axes, num_rows = pyplot.figure(figsize=(10, 10)), None, 0
         fig.show()
         while pyplot.get_fignums():
-            histories, keep_going, have_new_items = TrainHistoryPlotter.process_items(queue_, histories)
+            histories, keep_going, have_new_items = TrainHistoryPlotter.process_items(
+                queue_, histories
+            )
             if have_new_items:
-                fig, axes, num_rows = TrainHistoryPlotter.update_actual_graphs(histories, fig, axes, num_rows)
+                fig, axes, num_rows = TrainHistoryPlotter.update_actual_graphs(
+                    histories, fig, axes, num_rows
+                )
                 fig.canvas.draw_idle()
                 if save_filename:
                     fig.savefig(save_filename)
@@ -248,14 +268,14 @@ class ConsoleTrainOutput(object):
         for name, h in self.histories.items():
             if h.train:
                 epoch, mean, std = h.train[-1]
-                train_str = f'{mean:.4f} +/- {std:.4f}'
+                train_str = f"{mean:.4f} +/- {std:.4f}"
             else:
-                train_str = '----'
+                train_str = "----"
             if h.test:
                 epoch, val = h.test[-1]
-                test_str = f'{val:.4f}'
+                test_str = f"{val:.4f}"
             else:
-                test_str = '----'
+                test_str = "----"
             print(f"{name}: Train: {train_str}, Test: {test_str}")
             h.test = []
             h.train = []
@@ -271,13 +291,13 @@ class DebugData(NamedTuple):
     lossvals: list[list[LossVal]]
 
     def is_bad(self):
-        '''Checks data for badness.
+        """Checks data for badness.
 
         Currently NANs and input value range.
 
         Return:
             True if so.
-        '''
+        """
         # TODO: decouple for name of input tensor
         for k, v in self.parameters.items():
             if torch.any(torch.isnan(v)):
@@ -288,7 +308,7 @@ class DebugData(NamedTuple):
                 if torch.any(torch.isnan(v)):
                     print(f"{k} is NAN")
                     return True
-            inputs = b['image']
+            inputs = b["image"]
             if torch.amin(inputs) < -2.0 or torch.amax(inputs) > 2.0:
                 print(
                     f"Input image {inputs.shape} exceeds value limits with {torch.amin(inputs)} to {torch.amax(inputs)}"
@@ -307,25 +327,32 @@ class DebugData(NamedTuple):
 
 
 class DebugCallback:
-    '''For dumping a history of stuff when problems are detected.'''
+    """For dumping a history of stuff when problems are detected."""
 
     def __init__(self):
         self.history_length = 3
         self.debug_data: List[DebugData] = []
-        self.filename = '/tmp/notgood.pkl'
+        self.filename = "/tmp/notgood.pkl"
 
     def observe(
-        self, net_pre_update: nn.Module, batches: list[Batch], preds: dict[str, Tensor], lossvals: list[list[LossVal]]
+        self,
+        net_pre_update: nn.Module,
+        batches: list[Batch],
+        preds: dict[str, Tensor],
+        lossvals: list[list[LossVal]],
     ):
-        '''Record and check.
+        """Record and check.
         Args:
             batches: Actually sub-batches
             lossvals: One list of loss terms per sub-batch
-        '''
+        """
         dd = DebugData(
-            {k: v.detach().to('cpu', non_blocking=True, copy=True) for k, v in net_pre_update.state_dict().items()},
-            [b.to('cpu', non_blocking=True, copy=True) for b in batches],
-            {k: v.detach().to('cpu', non_blocking=True, copy=True) for k, v in preds.items()},
+            {
+                k: v.detach().to("cpu", non_blocking=True, copy=True)
+                for k, v in net_pre_update.state_dict().items()
+            },
+            [b.to("cpu", non_blocking=True, copy=True) for b in batches],
+            {k: v.detach().to("cpu", non_blocking=True, copy=True) for k, v in preds.items()},
             lossvals,
         )
         if len(self.debug_data) >= self.history_length:
@@ -334,7 +361,7 @@ class DebugCallback:
         if torch.cuda.is_available():
             torch.cuda.current_stream().synchronize()
         if dd.is_bad():
-            with open(self.filename, 'wb') as f:
+            with open(self.filename, "wb") as f:
                 pickle.dump(self.debug_data, f)
             raise RuntimeError("Bad state detected")
 
@@ -343,7 +370,7 @@ class DebugCallback:
 
 
 def default_compute_loss(
-    preds : dict[str,Tensor],
+    preds: dict[str, Tensor],
     batch: List[Batch],
     current_epoch: int,
     loss: dict[Any, Criterion | CriterionGroup] | Criterion | CriterionGroup,
@@ -355,8 +382,8 @@ def default_compute_loss(
     """
     # global g_debug
 
-    #inputs = torch.concat([b['image'] for b in batch], dim=0)
-    #preds = net(inputs)
+    # inputs = torch.concat([b['image'] for b in batch], dim=0)
+    # preds = net(inputs)
 
     lossvals_by_name = defaultdict(list)
     all_lossvals: list[list[LossVal]] = []
@@ -371,17 +398,22 @@ def default_compute_loss(
         loss_func_of_subset: Union[Criterion, CriterionGroup] = (
             loss[subset.meta.tag] if isinstance(loss, dict) else loss
         )
-        multi_task_terms: List[LossVal] = loss_func_of_subset.evaluate(subpreds, subset, current_epoch)
+        multi_task_terms: List[LossVal] = loss_func_of_subset.evaluate(
+            subpreds, subset, current_epoch
+        )
 
         # Support loss weighting by datasets
-        if 'dataset_weight' in subset:
-            dataset_weight = subset['dataset_weight']
+        if "dataset_weight" in subset:
+            dataset_weight = subset["dataset_weight"]
             assert dataset_weight.size(0) == subset.meta.batchsize
-            multi_task_terms = [v._replace(weight=v.weight * dataset_weight) for v in multi_task_terms]
+            multi_task_terms = [
+                v._replace(weight=v.weight * dataset_weight) for v in multi_task_terms
+            ]
         else:
             # Else, make the weight member a tensor the same shape as the loss values
             multi_task_terms = [
-                v._replace(weight=v.val.new_full(size=v.val.shape, fill_value=v.weight)) for v in multi_task_terms
+                v._replace(weight=v.val.new_full(size=v.val.shape, fill_value=v.weight))
+                for v in multi_task_terms
             ]
 
         all_lossvals.append(multi_task_terms)
@@ -393,12 +425,15 @@ def default_compute_loss(
     # Concatenate the loss values over the sub-batches.
     lossvals_by_name = concatenated_lossvals_by_name(itertools.chain.from_iterable(all_lossvals))
     # Compute weighted average, dividing by the batch size which is equivalent to substituting missing losses by 0.
-    loss_sum = torch.concat([(values * weights) for values, weights in lossvals_by_name.values()]).sum() / batchsize
+    loss_sum = (
+        torch.concat([(values * weights) for values, weights in lossvals_by_name.values()]).sum()
+        / batchsize
+    )
 
     # Transfer to CPU
     for loss_list in all_lossvals:
         for i, v in enumerate(loss_list):
-            loss_list[i] = v._replace(val=v.val.detach().to('cpu', non_blocking=True))
+            loss_list[i] = v._replace(val=v.val.detach().to("cpu", non_blocking=True))
     if torch.cuda.is_available():
         torch.cuda.current_stream().synchronize()
     return loss_sum, all_lossvals
@@ -443,12 +478,19 @@ class MetricsGraphing(Callback):
         self._visu = TrainHistoryPlotter(save_filename=join(trainer.default_root_dir, "train.pdf"))
 
     def on_train_batch_end(
-        self, trainer: pl.Trainer, pl_module: pl.LightningModule, outputs: Any, batch: Any, batch_idx: int
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        outputs: Any,
+        batch: Any,
+        batch_idx: int,
     ):
         mt_losses: dict[str, torch.Tensor] = outputs["mt_losses"]
         for k, v in mt_losses.items():
             self._visu.add_train_point(trainer.current_epoch, batch_idx, k, v.numpy())
-        self._visu.add_train_point(trainer.current_epoch, batch_idx, "loss", outputs["loss"].detach().cpu().numpy())
+        self._visu.add_train_point(
+            trainer.current_epoch, batch_idx, "loss", outputs["loss"].detach().cpu().numpy()
+        )
 
     def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         if trainer.lr_scheduler_configs:  # scheduler is not None:
@@ -479,7 +521,9 @@ class MetricsGraphing(Callback):
         if self._visu is None:
             return
         for k, v in self._metrics_accumulator.items():
-            self._visu.add_test_point(trainer.current_epoch - 1, k, torch.cat(v).mean().cpu().numpy())
+            self._visu.add_test_point(
+                trainer.current_epoch - 1, k, torch.cat(v).mean().cpu().numpy()
+            )
         if trainer.current_epoch > 0:
             self._visu.update_graph()
 
@@ -497,8 +541,10 @@ class SimpleProgressBar(Callback):
         self._batchsize = batchsize
 
     def on_train_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        self._bar = tqdm.tqdm(total=trainer.max_epochs, desc='Training', position=0)
-        self._epoch_bar = tqdm.tqdm(total=trainer.num_training_batches * self._batchsize, desc="Epoch", position=1)
+        self._bar = tqdm.tqdm(total=trainer.max_epochs, desc="Training", position=0)
+        self._epoch_bar = tqdm.tqdm(
+            total=trainer.num_training_batches * self._batchsize, desc="Epoch", position=1
+        )
 
     def on_train_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         self._bar.close()
@@ -520,7 +566,11 @@ class SimpleProgressBar(Callback):
         batch: list[Batch] | Batch,
         batch_idx: int,
     ) -> None:
-        n = sum(b.meta.batchsize for b in batch) if isinstance(batch, list) else batch.meta.batchsize
+        n = (
+            sum(b.meta.batchsize for b in batch)
+            if isinstance(batch, list)
+            else batch.meta.batchsize
+        )
         self._epoch_bar.update(n)
 
 
@@ -533,7 +583,15 @@ def TriangularSchedule(optimizer, min_lr, lr, num_steps, *args, **kwargs):
     num_steps_up = min(max(1, num_steps * 3 // 10), 33)
     num_steps_down = num_steps - num_steps_up
     return CyclicLR(
-        optimizer, min_lr, lr, num_steps_up, num_steps_down, *args, mode='triangular', cycle_momentum=False, **kwargs
+        optimizer,
+        min_lr,
+        lr,
+        num_steps_up,
+        num_steps_down,
+        *args,
+        mode="triangular",
+        cycle_momentum=False,
+        **kwargs,
     )
 
 

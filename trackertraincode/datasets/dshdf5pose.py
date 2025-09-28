@@ -19,13 +19,13 @@ Tag = Any
 
 
 class FieldCategory(StrEnum):
-    general = ''
-    image = 'img'
-    quat = 'q'
-    xys = 'xys'
-    roi = 'roi'
-    points = 'pts'  # Landmarks
-    semseg = 'seg'
+    general = ""
+    image = "img"
+    quat = "q"
+    xys = "xys"
+    roi = "roi"
+    points = "pts"  # Landmarks
+    semseg = "seg"
 
 
 imagelike_categories = [FieldCategory.image, FieldCategory.semseg]
@@ -33,26 +33,26 @@ imagelike_categories = [FieldCategory.image, FieldCategory.semseg]
 
 _inconsistent_name_mapping = dict(
     [
-        ('images', 'image'),
-        ('keys', 'image'),
-        ('seg_image', 'semseg'),
-        ('rois', 'roi'),
-        ('coords', 'coord'),
-        ('quats', 'pose'),
-        ('pt3d_68', 'pt3d_68'),
-        ('pt2d_68', 'pt2d_68'),
-        ('shapeparams', 'shapeparam'),
-        ('hasface', 'hasface'),
+        ("images", "image"),
+        ("keys", "image"),
+        ("seg_image", "semseg"),
+        ("rois", "roi"),
+        ("coords", "coord"),
+        ("quats", "pose"),
+        ("pt3d_68", "pt3d_68"),
+        ("pt2d_68", "pt2d_68"),
+        ("shapeparams", "shapeparam"),
+        ("hasface", "hasface"),
     ]
 )
 
 
 _field_default_names = {
-    FieldCategory.image: 'images',
-    FieldCategory.semseg: 'semseg',
-    FieldCategory.quat: 'quats',
-    FieldCategory.xys: 'coords',
-    FieldCategory.roi: 'rois',
+    FieldCategory.image: "images",
+    FieldCategory.semseg: "semseg",
+    FieldCategory.quat: "quats",
+    FieldCategory.xys: "coords",
+    FieldCategory.roi: "rois",
 }
 
 
@@ -99,13 +99,17 @@ def create_pose_dataset(
     if shape_wo_batch_dim is not None:
         if kind == FieldCategory.general:
             shape = (count,) + shape_wo_batch_dim
-        shape = (count,) + tuple(equal_or_updated(x, u) for x, u in zip(shape[1:], shape_wo_batch_dim))
+        shape = (count,) + tuple(
+            equal_or_updated(x, u) for x, u in zip(shape[1:], shape_wo_batch_dim)
+        )
     if data is not None:
         data = np.asarray(data)
         shape = shape + tuple([None] * (data.ndim - len(shape)))  # Pad shape with None's
         # Then fill in missing dimensions from data. And check if the other ones match.
         shape = tuple(equal_or_updated(x, u) for x, u in zip(shape, data.shape))
-        assert data.shape == shape, f"Expected shape {shape} but got from data the shape {data.shape}"
+        assert (
+            data.shape == shape
+        ), f"Expected shape {shape} but got from data the shape {data.shape}"
     assert all(x is not None for x in shape)
     if exists_ok and name in g:
         del g[name]
@@ -115,7 +119,7 @@ def create_pose_dataset(
         ds = ImageVariableLengthBufferDs.create(g, name, count, lossy=False, **kwargs)
     else:
         ds = create_dataset(g, name, shape, dtype, shape, data, **kwargs)
-    ds.attrs['category'] = kind.value
+    ds.attrs["category"] = kind.value
     return ds
 
 
@@ -123,7 +127,9 @@ def _find_image_size_and_give_channel_dim(values, categories):
     h, w = None, None
     # Note that itertools.count is a good bit slower than enumerate
     iter = (
-        (i, value) for i, (category, value) in enumerate(zip(categories, values)) if (category in imagelike_categories)
+        (i, value)
+        for i, (category, value) in enumerate(zip(categories, values))
+        if (category in imagelike_categories)
     )
     for i, value in iter:
         if value.ndim == 2:
@@ -132,8 +138,13 @@ def _find_image_size_and_give_channel_dim(values, categories):
         if h is None:
             h, w = new_h, new_w
         else:
-            assert (h, w) == (new_h, new_w), "Differently sized images in one sample are not supported"
-    assert (w is not None) and (h is not None), f"Currently requires an image. Couldn't find one in {categories}"
+            assert (h, w) == (
+                new_h,
+                new_w,
+            ), "Differently sized images in one sample are not supported"
+    assert (w is not None) and (
+        h is not None
+    ), f"Currently requires an image. Couldn't find one in {categories}"
     return w, h
 
 
@@ -146,22 +157,26 @@ def _change_strange_types(value):
 Field2Categories = Dict[str, FieldCategory]
 
 
-def _get_categories_of_h5datasets(names_datasets: List[Tuple[str, MaybeWrappedH5Dataset]]) -> Field2Categories:
-    return {name: ds.attrs.get('category', default=FieldCategory.general) for name, ds in names_datasets}
+def _get_categories_of_h5datasets(
+    names_datasets: List[Tuple[str, MaybeWrappedH5Dataset]],
+) -> Field2Categories:
+    return {
+        name: ds.attrs.get("category", default=FieldCategory.general) for name, ds in names_datasets
+    }
 
 
 default_whitelist = [
-    '/images',
-    '/keys',
-    '/rois',
-    '/coords',
-    '/quats',
-    '/pt3d_68',
-    '/pt2d_68',
-    '/shapeparams',
-    '/semseg',
-    '/seg_image',
-    '/hasface',
+    "/images",
+    "/keys",
+    "/rois",
+    "/coords",
+    "/quats",
+    "/pt3d_68",
+    "/pt2d_68",
+    "/shapeparams",
+    "/semseg",
+    "/seg_image",
+    "/hasface",
 ]
 
 
@@ -174,16 +189,27 @@ def _transfrom_to_pose_sample(
     names = [_inconsistent_name_mapping.get(n, n) for n in names]
     w, h = _find_image_size_and_give_channel_dim(values, categories)
     sample = batch.Batch(
-        batch.Metadata((w, h), 0, dataclass, None, categories=dict(zip(names, categories))), dict(zip(names, values))
+        batch.Metadata((w, h), 0, dataclass, None, categories=dict(zip(names, categories))),
+        dict(zip(names, values)),
     )
     return sample
 
 
 class Hdf5PoseDataset(TorchHdf5DatasetBase):
-    def __init__(self, filename, transform=None, monochrome=True, dataclass: Tag = None, whitelist: Whitelist = None, coord_convention_id : int = 0):
+    def __init__(
+        self,
+        filename,
+        transform=None,
+        monochrome=True,
+        dataclass: Tag = None,
+        whitelist: Whitelist = None,
+        coord_convention_id: int = 0,
+    ):
         whitelist = whitelist or default_whitelist
         self._sequence_starts = None
-        self._add_individual_to_sample = lambda x, i: x  # Nothing to do if sequence data is not available
+        self._add_individual_to_sample = (
+            lambda x, i: x
+        )  # Nothing to do if sequence data is not available
         super(Hdf5PoseDataset, self).__init__(filename, monochrome, whitelist)
         self.transform = (lambda x: x) if transform is None else transform
         self.dataclass = dataclass
@@ -194,18 +220,22 @@ class Hdf5PoseDataset(TorchHdf5DatasetBase):
         self._categories = _get_categories_of_h5datasets(names_datasets)
 
         if "sequence_starts" in f:
-            self._sequence_starts = np.array(f['sequence_starts'][...]).astype(np.int32)
+            self._sequence_starts = np.array(f["sequence_starts"][...]).astype(np.int32)
             self._frame_to_individual = np.concatenate(
                 [np.full(b - a, i, dtype=np.int32) for i, (a, b) in enumerate(self.sequences)]
             )
-        elif 'individual' in f:
-            self._frame_to_individual = f['individual'][...].astype(np.int32)
+        elif "individual" in f:
+            self._frame_to_individual = f["individual"][...].astype(np.int32)
 
-        if 'sequence_starts' in f or 'individual' in f:
+        if "sequence_starts" in f or "individual" in f:
+
             def add_individual(self: Hdf5PoseDataset, sample, index):
-                sample['individual'] = torch.tensor(self._frame_to_individual[index])
-                return sample            
-            self._add_individual_to_sample = lambda sample, index: add_individual(self, sample, index)
+                sample["individual"] = torch.tensor(self._frame_to_individual[index])
+                return sample
+
+            self._add_individual_to_sample = lambda sample, index: add_individual(
+                self, sample, index
+            )
 
         return names_datasets
 
@@ -221,8 +251,8 @@ class Hdf5PoseDataset(TorchHdf5DatasetBase):
         sample = super().__getitem__(index)
         sample = _transfrom_to_pose_sample(sample, self.dataclass, self._categories)
         sample = self._add_individual_to_sample(sample, index)
-        sample['index'] = torch.tensor(index, dtype=torch.int32)
-        sample['coord_convention_id'] = torch.tensor(self.coord_convention_id, dtype=torch.int32)
+        sample["index"] = torch.tensor(index, dtype=torch.int32)
+        sample["coord_convention_id"] = torch.tensor(self.coord_convention_id, dtype=torch.int32)
         return self.transform(sample)
 
 
@@ -238,9 +268,9 @@ class Hdf5PoseVideoDataset(TorchHdf5DatasetBase):
         dataclass: Tag = None,
         whitelist: Whitelist = None,
     ):
-        '''
+        """
         Creates small batches comprised of different images of the same individual
-        '''
+        """
         self.min_sequence_size = min_sequence_size
         self.max_sequence_size = max_sequence_size
         whitelist = whitelist or default_whitelist
@@ -253,10 +283,14 @@ class Hdf5PoseVideoDataset(TorchHdf5DatasetBase):
         names_datasets = super()._init_from_file(f, whitelist)
         self._categories = _get_categories_of_h5datasets(names_datasets)
         assert "sequence_starts" in f  # Must have sequences to sample two images from
-        self.sequence_starts = np.array(f['sequence_starts'])
+        self.sequence_starts = np.array(f["sequence_starts"])
         sequences = zip(self.sequence_starts[:-1], self.sequence_starts[1:])
         sequences = sum(
-            (self._postprocess_sequence(*s, self.min_sequence_size, self.max_sequence_size) for s in sequences), []
+            (
+                self._postprocess_sequence(*s, self.min_sequence_size, self.max_sequence_size)
+                for s in sequences
+            ),
+            [],
         )
         self.sequences = sequences
 
@@ -282,7 +316,7 @@ class Hdf5PoseVideoDataset(TorchHdf5DatasetBase):
 
     def _load_sample(self, sequence_index, index):
         s = _transfrom_to_pose_sample(super().__getitem__(index), self.dataclass, self._categories)
-        s['individual'] = torch.tensor(sequence_index, dtype=torch.int32)
+        s["individual"] = torch.tensor(sequence_index, dtype=torch.int32)
         s = self.frame_transform(s)
         return s
 
