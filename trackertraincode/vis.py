@@ -75,7 +75,9 @@ def draw_roi(img, roi, color, linewidth):
 def draw_pose(img, sample, color=None, linewidth=3):
     rot = sample['pose']
     x, y, s = sample['coord']
-    draw_axis(img, rot, tdx = x, tdy = y, brgt=255, lw=linewidth, color=color)
+    draw_axis(img, rot, tdx = x, tdy = y, brgt=255, lw=linewidth, color=None)
+    if color is not None:
+        cv2.circle(img, (int(x),int(y)), 4, color, -1)
     if s <= 0.:
         print (f"Error, head size {s} not positive!")
         print (sample)
@@ -143,6 +145,8 @@ def _draw_sample(img : np.ndarray, sample : Union[Batch,dict], labels : bool = T
         #color = ((0,brightness,0) if sample['hasface']>0.5 else (brightness,0,0)) \
         #        if 'hasface' in sample else (brightness,0,brightness)
         roi = sample['roi']
+        if color is None:
+            color = (255,255,255)
         draw_roi(img, roi, color, linewidth)
     if 'hasface' in sample:
         maybe_draw_no_face_indication(img, sample, 255, linewidth)

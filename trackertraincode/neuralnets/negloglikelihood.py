@@ -11,6 +11,8 @@ from torch import Tensor
 from trackertraincode.neuralnets.math import sqrclip0, inv_sqrclip0, smoothclip0, inv_smoothclip0
 import trackertraincode.facemodel.keypoints68 as kpts68
 import trackertraincode.neuralnets.torchquaternion as Q
+import trackertraincode.neuralnets.torch6drotation as R6d
+from trackertraincode.neuralnets.rotrepr import RotationRepr, QuatRepr, Mat33Repr
 from torch.distributions import Normal, MultivariateNormal, Laplace
 
 make_positive = smoothclip0
@@ -226,9 +228,9 @@ class QuatPoseNLLLoss(nn.Module):
 
     def __call__(self, preds, sample):
         target = sample['pose']
-        quat = preds['pose']
+        rot : RotationRepr = preds['rot']
         cov = preds['pose_scales_tril']
-        log_prob = TangentSpaceRotationDistribution(quat, cov).log_prob(target)
+        log_prob = TangentSpaceRotationDistribution(rot.as_quat(), cov).log_prob(target)
         return -self.uniform_mixing(log_prob)
 
 

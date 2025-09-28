@@ -16,3 +16,4 @@ pytest
 scikit-learn
 torchmetrics
 pytorch-lightning
+pre-commit

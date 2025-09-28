@@ -58,7 +58,7 @@ def filter_file_by_sequences(f, fout, good_sequences_indices = None, bad_sequenc
             assert False
 
 
-def filter_file_by_frames(f : h5py.File, fout, good_frame_indices = None, bad_frame_indices = None):
+def filter_file_by_frames(f : h5py.File, fout, *, good_frame_indices = None, bad_frame_indices = None):
     assert (good_frame_indices is None) != (bad_frame_indices is None)
     assert not 'sequence_starts' in f, "Not supported"
     frame_count = next(iter(f.values())).shape[0]

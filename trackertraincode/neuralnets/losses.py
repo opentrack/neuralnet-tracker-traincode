@@ -9,8 +9,9 @@ import h5py
 
 import trackertraincode.facemodel.keypoints68 as kpts68
 import trackertraincode.neuralnets.torchquaternion as torchquaternion
+import trackertraincode.neuralnets.torch6drotation as torch6drotation
 from trackertraincode.neuralnets.modelcomponents import GaussianMixture
-
+from trackertraincode.neuralnets.rotrepr import RotationRepr, QuatRepr, Mat33Repr
 
 SimpleLossSwitch = Literal['l2','smooth_l1']
 LOSS_OBJECT_MAP : Mapping[SimpleLossSwitch, Any] = {
@@ -38,9 +39,23 @@ class QuatPoseLoss(object):
         self._prefix = prefix
         self.loss_func = LOSS_FUNC_MAP_FOR_ROTATION[loss]
     def __call__(self, pred, sample):
-        target = sample['pose']
-        quat = pred[self._prefix+'pose']
-        return self.loss_func(quat, target)
+        target : torch.Tensor = sample['pose']
+        quat : QuatRepr = pred[self._prefix+'rot']
+        return self.loss_func(quat.value, target)
+
+
+class Rot6dReprLoss:
+    def __call__(self, pred_batch, target_batch):
+        pred : Mat33Repr = pred_batch['rot']
+        target : torch.Tensor = target_batch['pose']
+        target = torchquaternion.tomatrix(target)
+        return torch6drotation.rotation_distance_loss(pred.value, target)
+
+
+class Rot6dNormalizationSoftConstraint:
+    def __call__(self, pred_batch, target_batch):
+        pred = pred_batch['unnormalized_6drepr']
+        return torch6drotation.orthonormality_loss(pred)
 
 
 class PoseSizeLoss(object):

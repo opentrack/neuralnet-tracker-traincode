@@ -34,6 +34,7 @@ class  Tag(enum.Enum):
     POSE_WITH_LANDMARKS_3D_AND_2D = 8
     ONLY_LANDMARKS_2D = 9
     SEMSEG = 10
+    POSE_WITH_LMKS_NO_SHAPE_PARAMS = 11
 
 
 class Id(enum.Enum):
@@ -49,6 +50,8 @@ class Id(enum.Enum):
     WFLW_LP = 16
     LAPA_MEGAFACE_LP = 17
     REPO_300WLP_WO_EXTRA = 18
+    PANOPTIC_CMU = 19
+    REPLICANT_FACE = 20
 
 
 # See https://pytorch.org/docs/stable/notes/randomness.html
@@ -107,6 +110,24 @@ def make_widerface_datasets(transform=None):
     ds_widerface_train = Subset(ds_widerface, np.arange(500, len(ds_widerface)))
     ds_widerface_test = Subset(ds_widerface, np.arange(500))
     return ds_widerface_train, ds_widerface_test
+
+
+def make_panoptic_datasets(transform=None):
+    ds = Hdf5PoseDataset(join(os.environ['DATADIR'],'panoptic-v2.h5'), transform=transform, dataclass=Tag.ONLY_POSE, coord_convention_id=1)
+    test_indices = np.random.RandomState(seed=1234567).choice(len(ds), 1024, replace=False)
+    train_indices = np.setdiff1d(np.arange(len(ds)), test_indices)
+    ds_train = Subset(ds, train_indices)
+    ds_test  = Subset(ds, test_indices)
+    return ds_train, ds_test
+
+
+def make_replicant_face_datasets(transform=None):
+    ds = Hdf5PoseDataset(join(os.environ['DATADIR'],'replicant-face-v4-like-300wlp.h5'), transform=transform, dataclass=Tag.POSE_WITH_LMKS_NO_SHAPE_PARAMS)
+    return ds
+
+
+def make_panoptic_trainset(transform=None):
+    return make_panoptic_datasets(transform)[0]
 
 
 def indices_without_extreme_poses(filename):
@@ -265,7 +286,7 @@ def make_pose_estimation_loaders(
     train_sets_weight_list = []
 
     for id, ds_ctor, default_sample_weight in [
-        (Id.SYNFACE, make_synface_dataset, 10000), # Synface has 100k frames. But they are synthetic. Not going to weight them that much. So weight is only 10k.
+        (Id.SYNFACE, make_synface_dataset, 10_000.), # Synface has 100k frames. But they are synthetic. Not going to weight them that much. So weight is only 10k.
         (Id.BIWI, make_biwi_datasest, 1000),
         # Tons of frames in 300VW but only 200 individuals. Assume 
         # 20 samples with sufficiently  small correlation.
@@ -273,7 +294,9 @@ def make_pose_estimation_loaders(
         (Id.LAPA, make_lapa_dataset, 20000.),
         (Id.WFLW_LP, make_wflw_lp_dataset, 40000.),
         # There are over 70k frames in the latter but the labels are a bit shitty so I don't weight it as high.
-        (Id.LAPA_MEGAFACE_LP, make_lapa_megaface_lp_dataset, 10000.) ]:
+        (Id.LAPA_MEGAFACE_LP, make_lapa_megaface_lp_dataset, 10000.),
+        (Id.PANOPTIC_CMU, make_panoptic_trainset, 20_000.),
+        (Id.REPLICANT_FACE, make_replicant_face_datasets, 10_000.) ]:
             if id not in datasets:
                 continue
             train = ds_ctor(transform=C(headpose_train_trafo))
@@ -422,6 +445,12 @@ def make_validation_dataset(name : str,
         ds = make_wflw_lp_dataset(transform=test_trafo)
     elif name == 'lapa_megaface_lp':
         ds = make_lapa_megaface_lp_dataset(transform=test_trafo)
+    elif name == 'panoptic':
+        ds = make_panoptic_datasets(transform=test_trafo)[1]
+    elif name == 'replicantface-train':
+        ds = make_replicant_face_datasets(transform=test_trafo)
+        rng = np.random.default_rng(seed=42)
+        ds = Subset(ds, rng.integers(0, len(ds)-1, size=1000))
     else:
         assert False, f"Unknown dataset {name}"
 

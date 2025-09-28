@@ -79,8 +79,9 @@ class LitModel(pl.LightningModule):
         return train.CriterionGroup([c1, c2], 'test_head_out_')
 
     def training_step(self, batch: Batch, batch_idx):
+        preds = self._model(batch['image'])
         loss_sum, all_lossvals = train.default_compute_loss(
-            self._model, [batch], self.current_epoch, self._train_criterions
+            preds, [batch], self.current_epoch, self._train_criterions
         )
         loss_val_by_name = {
             name: val

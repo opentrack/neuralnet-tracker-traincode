@@ -57,6 +57,7 @@ class MyArgs(argparse.Namespace):
     with_roi_train: bool
     dropout_prob: float
     rampup_nll_losses: bool
+    enable_6drot : bool
 
 
 def parse_dataset_definition(arg: str):
@@ -75,6 +76,8 @@ def parse_dataset_definition(arg: str):
         "repro_300_wlp_woextra": trackertraincode.pipelines.Id.REPO_300WLP_WO_EXTRA,
         "wflw_lp": trackertraincode.pipelines.Id.WFLW_LP,
         "lapa_megaface_lp": trackertraincode.pipelines.Id.LAPA_MEGAFACE_LP,
+        "panoptic" : trackertraincode.pipelines.Id.PANOPTIC_CMU,
+        "replicantface" : trackertraincode.pipelines.Id.REPLICANT_FACE
     }
 
     splitted = arg.split("+")
@@ -158,9 +161,12 @@ def create_optimizer(net, args: MyArgs):
 
 
 def setup_losses(args: MyArgs, net):
+    rot_loss =  losses.Rot6dReprLoss() if args.enable_6drot else losses.QuatPoseLoss("approx_distance")
+    rot_constraint = losses.Rot6dNormalizationSoftConstraint() if args.enable_6drot else losses.QuaternionNormalizationSoftConstraint()
+
     C = train.Criterion
     cregularize = [
-        C("quatregularization1", losses.QuaternionNormalizationSoftConstraint(), 1.0e-6),
+        C("quatregularization1", rot_constraint, 1.0e-6),
     ]
     poselosses = []
     roilosses = []
@@ -209,7 +215,7 @@ def setup_losses(args: MyArgs, net):
             ]
     if 1:
         poselosses += [
-            C("rot", losses.QuatPoseLoss("approx_distance"), 0.5),
+            C("rot", rot_loss, 1.0),
             C("xy", losses.PoseXYLoss("l2"), 0.5 * 0.5),
             C("sz", losses.PoseSizeLoss("l2"), 0.5 * 0.5),
         ]
@@ -234,7 +240,10 @@ def setup_losses(args: MyArgs, net):
             ]
 
     train_criterions = {
-        Tag.ONLY_POSE: train.CriterionGroup(poselosses + cregularize),
+        Tag.ONLY_POSE: train.CriterionGroup(poselosses + cregularize + roilosses),
+        Tag.POSE_WITH_LMKS_NO_SHAPE_PARAMS: train.CriterionGroup(
+            poselosses + cregularize + pointlosses + roilosses
+        ),
         Tag.POSE_WITH_LANDMARKS: train.CriterionGroup(
             poselosses + cregularize + pointlosses + shapeparamloss + roilosses
         ),
@@ -260,6 +269,7 @@ def create_net(args: MyArgs):
         config=args.backbone,
         enable_uncertainty=args.with_nll_loss,
         backbone_args={},
+        enable_6drot=args.enable_6drot
     )
 
 
@@ -275,8 +285,11 @@ class LitModel(pl.LightningModule):
         self._test_criterions = test_criterions
 
     def training_step(self, batches: list[Batch], batch_idx):
+        inputs = torch.concat([b['image'] for b in batches], dim=0)
+        coord_convention_ids = torch.concat([b['coord_convention_id'] for b in batches], dim=0)
+        preds = self._model(inputs, coord_convention_ids)
         loss_sum, all_lossvals = train.default_compute_loss(
-            self._model, batches, self.current_epoch, self._train_criterions
+            preds, batches, self.current_epoch, self._train_criterions
         )
         loss_val_by_name = {
             name: val
@@ -355,6 +368,7 @@ def main():
     )
     parser.add_argument("--no-roi-train", default=True, action="store_false", dest="with_roi_train")
     parser.add_argument("--rampup-nll-losses", default=False, action="store_true")
+    parser.add_argument("--enable-6drot", default=False, action='store_true')
 
     args: MyArgs = parser.parse_args()
     args.input_size = 129
@@ -375,9 +389,8 @@ def main():
     )
 
     progress_cb = train.SimpleProgressBar(args.batchsize)
-
-    callbacks = [train.MetricsGraphing(), checkpoint_cb, progress_cb]
-
+    visu_cb = train.MetricsGraphing()
+    callbacks = [visu_cb, checkpoint_cb, progress_cb]
     swa_callback = None
     if args.swa:
         swa_callback = train.SwaCallback(start_epoch=args.epochs * 2 // 3)
@@ -400,12 +413,15 @@ def main():
 
     trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=test_loader)
 
+    visu_cb.close()
+
     if checkpoint_cb is not None:
         # Overwrite the lightning checkpoint!
         model = LitModel.load_from_checkpoint(checkpoint_cb.last_model_path, args=args).to("cpu")
         models.save_model(model.model, checkpoint_cb.last_model_path)
         model = LitModel.load_from_checkpoint(checkpoint_cb.best_model_path, args=args).to("cpu")
         models.save_model(model.model, checkpoint_cb.best_model_path)
+
 
 
 if __name__ == "__main__":

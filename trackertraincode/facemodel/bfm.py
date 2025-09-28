@@ -61,6 +61,7 @@ class BFMModel(object):
     
     @property
     def scaled_vertices(self):
+        '''shape (num vertices,3)'''
         actualcenter = np.array([0., -0.26, -0.9], dtype='f4')
         vertices = self.u.reshape((-1,3))*1.e-5*np.array([[1.,-1.,-1.]],dtype='f4')
         vertices -= actualcenter[None,:]

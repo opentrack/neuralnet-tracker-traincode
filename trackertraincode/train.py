@@ -343,7 +343,7 @@ class DebugCallback:
 
 
 def default_compute_loss(
-    net,
+    preds : dict[str,Tensor],
     batch: List[Batch],
     current_epoch: int,
     loss: dict[Any, Criterion | CriterionGroup] | Criterion | CriterionGroup,
@@ -355,9 +355,8 @@ def default_compute_loss(
     """
     # global g_debug
 
-    inputs = torch.concat([b['image'] for b in batch], dim=0)
-
-    preds = net(inputs)
+    #inputs = torch.concat([b['image'] for b in batch], dim=0)
+    #preds = net(inputs)
 
     lossvals_by_name = defaultdict(list)
     all_lossvals: list[list[LossVal]] = []

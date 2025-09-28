@@ -20,7 +20,7 @@ from torchvision.transforms import Compose
 from trackertraincode.datasets.batch import Batch
 from torch.utils.data import Subset
 
-from trackertraincode.eval import load_pose_network, predict, InferenceNetwork
+from trackertraincode.eval import load_pose_network, InferenceNetwork, Predictor
 
 from trackertraincode.datasets.dshdf5pose import create_pose_dataset, FieldCategory
 
@@ -37,12 +37,11 @@ def setup_loader(args):
     if args.dryrun:
         ds = Subset(ds, np.arange(10))
     N = len(ds)
-    loader = dtr.PostprocessingDataLoader(ds, args.batchsize,
+    loader = dtr.PostprocessingLoader(ds, args.batchsize,
         shuffle=False,
-        num_workers=0, #utils.num_workers(),
+        num_workers=utils.num_workers(),
         postprocess=None,
         collate_fn= lambda samples : samples,
-        unroll_list_of_batches = False
     )
     return loader, ds
 
@@ -51,7 +50,7 @@ def fit_batch(net : InferenceNetwork, batch : List[Batch]):
     images = [ s['image'] for s in batch ]
     rois = torch.stack([ s['roi'] for s in batch ])
     indices = torch.stack([ s['index'] for s in batch ])
-    out = predict(net, images, rois, focus_roi_expansion_factor=1.2)
+    out = Predictor(net, focus_roi_expansion_factor=1.2).predict_batch(images, rois, )
     out = {
         k:out[k] for k in 'unnormalized_quat coord pt3d_68 shapeparam'.split()
     }

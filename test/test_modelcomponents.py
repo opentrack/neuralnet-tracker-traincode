@@ -4,7 +4,8 @@ import numpy as np
 import torch
 import h5py
 
-from trackertraincode.neuralnets.modelcomponents import GaussianMixture
+from trackertraincode.neuralnets.modelcomponents import GaussianMixture, LocalToGlobalCoordinateOffset
+from trackertraincode.neuralnets.rotrepr import QuatRepr
 
 @pytest.fixture()
 def rng() -> np.random.RandomState:
@@ -44,3 +45,22 @@ class TestGaussianMixture:
         np.testing.assert_array_equal(gmm.means, restored.means)
         np.testing.assert_array_equal(gmm.cov, restored.cov)
         np.testing.assert_array_equal(gmm.scales_inv, restored.scales_inv)
+
+
+def test_local_to_global_transform_offset():
+    from scipy.spatial.transform import Rotation
+
+    tr = LocalToGlobalCoordinateOffset()
+    tr.p.data[:] = torch.tensor([ 1., 3., 4., 2. ])
+
+    r = Rotation.from_rotvec([ 0., 0.5, 0.])
+    q = r.as_quat().astype(np.float32)
+    c = np.asarray([ 1., 2., 3. ], dtype=np.float32)
+
+    pred_quat, pred_coord = tr(QuatRepr(torch.from_numpy(q)[None,...]), torch.from_numpy(c)[None,...], set_id=None)
+    pred_r = Rotation.from_quat(pred_quat.value.detach().numpy())
+    pred_c = pred_coord.detach().numpy()
+    expect_scale = 3.*np.exp(2.)
+    expect_c = -(r.apply(expect_scale*np.array([ 3., 4., 0. ]))[[2,1]]) + np.array([1.,2.])
+    print ((r.inv()*pred_r).magnitude())
+    print (pred_c, expect_c, expect_scale)

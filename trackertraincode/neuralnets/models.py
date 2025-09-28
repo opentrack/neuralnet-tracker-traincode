@@ -15,10 +15,11 @@ from trackertraincode.neuralnets.modelcomponents import (
     DeformableHeadKeypoints, 
     CenterOfMassAndStd,
     LocalToGlobalCoordinateOffset,
-    quaternion_from_features
+    RotationRepr
 )
 
 import trackertraincode.neuralnets.negloglikelihood as NLL
+from trackertraincode.neuralnets.rotrepr import Mat33Repr, QuatRepr
 import trackertraincode.neuralnets.torchquaternion as torchquaternion
 from trackertraincode.backbones.mobilenet_v1 import MobileNet
 from trackertraincode.backbones.efficientnet import EfficientNetBackbone
@@ -143,10 +144,36 @@ class DirectQuaternionWithNormalization(nn.Module):
     
     def forward(self, x) -> Dict[str, Tensor]:
         z = self.linear(x)
-        quats, quats_unnormalized = quaternion_from_features(z)
+        quats, quats_unnormalized = QuatRepr.from_features(z)
         out = {
             'unnormalized_quat' : quats_unnormalized,
-            'pose' : quats, 
+            'rot' : quats, 
+        }
+        if self.enable_uncertainty:
+            scales = self.uncertainty_net(x)
+            out.update({
+                'pose_scales_tril' : scales,
+            })
+        return out
+
+
+class RotRepr6dWithNormalization(nn.Module):
+    def __init__(self, num_features, enable_uncertainty = False):
+        super().__init__()
+        self.enable_uncertainty = enable_uncertainty
+        self.linear = nn.Linear(num_features, 6, bias=True)
+        # Bias toward identity
+        self.linear.bias.data[...] = 0.001*torch.as_tensor([1.,0.,0.,0.,1.,0.])
+        if enable_uncertainty:
+            self.uncertainty_net = NLL.FeaturesAsTriangularScale(
+                num_features, 3)
+    
+    def forward(self, x) -> Dict[str, Tensor]:
+        z = self.linear(x)
+        mrot = Mat33Repr.from_6drepr_features(z)
+        out = {
+            'unnormalized_6drepr' : z,
+            'rot' : mrot
         }
         if self.enable_uncertainty:
             scales = self.uncertainty_net(x)
@@ -245,6 +272,7 @@ class CnnNeck(nn.Module):
 
 
 class NetworkWithPointHead(nn.Module):
+    NUM_DATASET_CONSTANTS = 8
     def __init__(
             self, 
             enable_point_head=True, 
@@ -253,7 +281,8 @@ class NetworkWithPointHead(nn.Module):
             enable_uncertainty=False,
             dropout_prob = None, # For loading old models. Ignored because they all used 0.5.
             use_local_pose_offset = True,
-            backbone_args = None):
+            backbone_args = None,
+            enable_6drot = False):
         super(NetworkWithPointHead, self).__init__()
         
         assert dropout_prob is None or dropout_prob in (0.,0.5)
@@ -264,6 +293,7 @@ class NetworkWithPointHead(nn.Module):
         self.config = config
         self.enable_uncertainty = enable_uncertainty
         self.use_local_pose_offset = use_local_pose_offset
+        self.enable_6drot = enable_6drot
         self._backbone_args = {} if (backbone_args is None) else backbone_args
         self._input_resolution = (129,)
         num_heads = 3 + (1 if enable_point_head else 0) + (1 if enable_face_detector else 0)
@@ -278,9 +308,12 @@ class NetworkWithPointHead(nn.Module):
 
         self.boxnet = BoundingBox(num_features, enable_uncertainty)
         self.posnet = PositionSizeOutput(num_features, enable_uncertainty)
-        self.quatnet = DirectQuaternionWithNormalization(num_features, enable_uncertainty)
-        self.local_pose_offset = LocalToGlobalCoordinateOffset()
-        self.local_pose_offset_kpts = LocalToGlobalCoordinateOffset()
+        if self.enable_6drot:
+            self.quatnet = RotRepr6dWithNormalization(num_features, enable_uncertainty)
+        else:
+            self.quatnet = DirectQuaternionWithNormalization(num_features, enable_uncertainty)
+        self.local_pose_offset = LocalToGlobalCoordinateOffset(self.NUM_DATASET_CONSTANTS)
+        self.local_pose_offset_kpts = LocalToGlobalCoordinateOffset(self.NUM_DATASET_CONSTANTS)
         if enable_point_head:
             self.landmarks = Landmarks3dOutput(num_features, enable_uncertainty)
         if enable_face_detector:
@@ -293,7 +326,8 @@ class NetworkWithPointHead(nn.Module):
             'config' : self.config,
             'enable_uncertainty' : self.enable_uncertainty,
             'use_local_pose_offset' : self.use_local_pose_offset,
-            'backbone_args' : self._backbone_args
+            'backbone_args' : self._backbone_args,
+            'enable_6drot' : self.enable_6drot
         }
 
     @property
@@ -308,10 +342,10 @@ class NetworkWithPointHead(nn.Module):
     def name(self) -> str:
         return type(self).__name__+'_'+self.config
 
-    def forward(self, x):
+    def forward(self, x : Tensor, coord_convention_id : Tensor | None = None):
         assert x.shape[2] in self.input_resolutions and \
                x.shape[3] == x.shape[2]
-
+        
         x, _ = self.convnet(x)
         zs : list[Tensor] = list(self.neck(x))
         del x
@@ -323,29 +357,30 @@ class NetworkWithPointHead(nn.Module):
 
         if self.use_local_pose_offset:
             out.update({
-                'hidden_pose' : out['pose'],
+                'hidden_rot' : out['rot'],
                 'hidden_coord' : out['coord']
             })
-            quats, coords = self.local_pose_offset(out.pop('pose'), out.pop('coord'))
+            rots, coords = self.local_pose_offset(out.pop('rot'), out.pop('coord'), set_id=coord_convention_id)
             out.update({
-                'pose' : quats,
+                'rot' : rots,
                 'coord' : coords
             })
         
-        quats, coords = out['pose'], out['coord']
+        rots, coords = out['rot'], out['coord']
 
         if self.enable_point_head:
             if self.use_local_pose_offset:
-                quats, coords = self.local_pose_offset_kpts(out['hidden_pose'], out['hidden_coord'])
-            out.update(self.landmarks(zs.pop(), quats, coords))
+                rots, coords = self.local_pose_offset_kpts(out['hidden_rot'], out['hidden_coord'], set_id=coord_convention_id)
+            out.update(self.landmarks(zs.pop(), rots, coords))
 
         if self.enable_face_detector:
             hasface_logits = self.face_detector(zs.pop()).view(x.size(0))
             out.update({'hasface_logits' : hasface_logits, 'hasface' : torch.sigmoid(hasface_logits) })
 
-        out.pop('hidden_pose', None)
+        out.pop('hidden_rot', None)
         out.pop('hidden_coord', None)
-
+        if not self.training:
+            out['pose'] = out['rot'].as_quat()
         return out
 
 

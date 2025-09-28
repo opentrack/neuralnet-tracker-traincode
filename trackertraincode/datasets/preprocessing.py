@@ -19,6 +19,7 @@ class ImageFormat(enum.IntEnum):
 def which_image_format(buffer : np.ndarray) -> ImageFormat:
     f = io.BytesIO(buffer.tobytes())
     kind = imghdr.what(f)
+    assert kind is not None
     return {
         'jpeg' : ImageFormat.JPG,
         'png' : ImageFormat.PNG
@@ -60,8 +61,14 @@ def imdecode(blob, color=False):
 
 
 def imread(fn):
+    '''Reads image.
+    
+    Color images are returned in RGB  format!
+    '''
     img = cv2.imread(fn)
     assert img is not None, f"Failed to load image {fn}!"
+    if len(img.shape)==3 and img.shape[-1]==3:
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     return img
 
 

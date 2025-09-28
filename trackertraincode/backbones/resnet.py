@@ -92,7 +92,7 @@ class ResNetBackbone(nn.Module):
         return y, None
 
 
-def resnet18(use_blurpool : bool = True):
+def resnet18(use_blurpool : bool = False):
     net = ResNetBackbone(
         layers=[2,2,2,2],
         weights=None,

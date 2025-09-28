@@ -135,7 +135,11 @@ def load_pose_network(filename, device) -> InferenceNetwork:
                 return self._net.input_resolution
 
             def __call__(self, images):
-                return self._net(images)
+                out = self._net(images)
+                # Eval code uses the 'pose'` field which is always a quaternion(s).
+                # It cannot deal with the rotation representation stuff in the `rot` field.
+                del out['rot']
+                return out
 
         return PytorchPoseNetwork(filename, device)
 

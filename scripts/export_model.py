@@ -13,6 +13,8 @@ from torch.ao.quantization import fake_quantize
 from torch.ao.quantization import observer
 
 import torch.onnx
+import onnx.shape_inference
+import onnxsim
 import torch.nn as nn
 import onnx
 try:
@@ -20,6 +22,7 @@ try:
 except ImportError:
     ort = None
     print ("Warning cannot import ONNX runtime: Runtime checks disabled")
+from onnxconverter_common import float16
 
 from trackertraincode.neuralnets.bnfusion import fuse_convbn
 import trackertraincode.neuralnets.models
@@ -55,7 +58,7 @@ def quantize_backbone(original : trackertraincode.neuralnets.models.NetworkWithP
     train_loader, _, _ = trackertraincode.pipelines.make_pose_estimation_loaders(
         inputsize = original.input_resolution, 
         batchsize = 128,
-        datasets = [dsid.REPO_300WLP,dsid.SYNFACE,dsid],
+        datasets = [dsid.REPO_300WLP,dsid.REPLICANT_FACE,dsid.LAPA_MEGAFACE_LP,dsid.WFLW_LP],
         dataset_weights = {},
         use_weights_as_sampling_frequency=True,
         enable_image_aug=True,
@@ -122,7 +125,6 @@ class ModelForOpenTrack(nn.Module):
             self._output_name_map += [
                 ('coord_scales'     , 'pos_size_scales_tril'),
                 ('pose_scales_tril' , 'rotaxis_scales_tril'),
-                ('roi_scales'       , 'box_scales'),
             ]
     
     @property
@@ -191,7 +193,7 @@ def compare_network_outputs(torchmodel, ort_session, inputs):
 
 
 @torch.no_grad()
-def convert_posemodel_onnx(net : nn.Module, filename, for_opentrack=True, quantize=False):
+def convert_posemodel_onnx(net : nn.Module, filename, for_opentrack=True, quantize=False, fp16=False):
     net.load_state_dict(clear_denormals(net.state_dict()))
     if quantize:
         net = quantize_backbone(net)
@@ -209,8 +211,15 @@ def convert_posemodel_onnx(net : nn.Module, filename, for_opentrack=True, quanti
 
     B, C, H, W = inputs[0].shape
 
-    destination = splitext(filename)[0]+('_ptq' if quantize else '')+('.onnx' if for_opentrack else '_complete.onnx')
-
+    destination = splitext(filename)[0]
+    if quantize:
+        destination += '_ptq'
+    if fp16:
+        destination += '_fp16'
+    if not for_opentrack:
+        destination += '_complete'
+    destination += '.onnx'
+    
     print (f"Exporting {net.__class__}, input size = {H},{W} to {destination}")
 
     dynamic_axes = None if for_opentrack else \
@@ -241,8 +250,16 @@ def convert_posemodel_onnx(net : nn.Module, filename, for_opentrack=True, quanti
     onnxmodel.doc_string = 'Head pose prediction'
     onnxmodel.model_version = 4  # This must be an integer or long.
     
+    onnxmodel = onnx.shape_inference.infer_shapes(onnxmodel)
+
+    onnxmodel,_ = onnxsim.simplify(onnxmodel)
+
     onnx.checker.check_model(onnxmodel)
     
+    if fp16:
+        onnxmodel = float16.convert_float_to_float16(onnxmodel, keep_io_types=True)
+        onnx.checker.check_model(onnxmodel)
+
     onnx.save(onnxmodel, destination)
 
     if ort is not None:
@@ -297,10 +314,11 @@ if __name__ == '__main__':
     parser.add_argument('--full', action='store_true', default=False)
     parser.add_argument('--localizer', dest = 'localizermodelfilename', help="filename of model checkpoint", type=str, default=None)
     parser.add_argument('--quantize', action='store_true', default=False)
+    parser.add_argument('--fp16', action='store_true', default=False)
     args = parser.parse_args()
     if args.posemodelfilename:
         net = trackertraincode.neuralnets.models.load_model(args.posemodelfilename) 
-        convert_posemodel_onnx(net, args.posemodelfilename, for_opentrack=not args.full, quantize=args.quantize)
+        convert_posemodel_onnx(net, args.posemodelfilename, for_opentrack=not args.full, quantize=args.quantize, fp16=args.fp16)
     if args.localizermodelfilename:
        convert_localizer(args)
     if not args.posemodelfilename and not args.localizermodelfilename:

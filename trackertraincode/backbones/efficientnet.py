@@ -10,7 +10,7 @@ class EfficientNetBackbone(nn.Module):
     '''
     kind must be in (b0,b3,b4)
     '''
-    def __init__(self, kind : str, input_channels, *args, **kwargs):
+    def __init__(self, kind : str, input_channels, *args, return_only_featuremaps = False, **kwargs):
         super().__init__()
 
         Config = NamedTuple('Config', [('feature_counts',List[int]), ('output_feature_count', int)])
@@ -21,6 +21,7 @@ class EfficientNetBackbone(nn.Module):
         }
         assert kind in configs.keys()
         self.num_intermediate_features, self.num_features = configs[kind]
+        self.return_only_featuremaps = return_only_featuremaps
 
         pretrained = kwargs.pop('weights', None)
         if pretrained == 'pretrained':
@@ -59,8 +60,7 @@ class EfficientNetBackbone(nn.Module):
         y = self.layers(x)
         z = [ self.dest[k] for k in 'z65 z33 z17 z9 z5'.split(' ') ]
         self.dest.clear()
-        y = torch.mean(y, dim=(-2,-1))
-        return y, z
+        return y if self.return_only_featuremaps else (torch.mean(y, dim=(-2,-1)), z)
 
     def prepare_finetune(self) -> List[List[torch.nn.Parameter]]:
         '''

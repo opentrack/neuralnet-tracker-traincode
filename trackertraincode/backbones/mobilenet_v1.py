@@ -74,7 +74,7 @@ class DepthWiseBlock(nn.Module):
 
 
 class MobileNet(nn.Module):
-    def __init__(self, num_classes=1000, widen_factor=1.0, input_channel=1, momentum=0.1, dropout = 0.0, use_blurpool=True, return_only_featuremap=False):
+    def __init__(self, num_classes=1000, widen_factor=1.0, input_channel=1, momentum=0.1, dropout = 0.0, use_blurpool=False, return_only_featuremap=False):
         """ Constructor
         Args:
             widen_factor: config of widen_factor

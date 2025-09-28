@@ -80,10 +80,13 @@ AlignmentScheme = Literal['perspective', 'opal23', 'none']
 class DrawPredictionsWithHistory:
     def __init__(self, name):
         self.index_by_individual = defaultdict(list)
+        self.samples_chronologically = []
         self.name = name
 
     def print_viewed(self):
-        return print(self.name + ":\n" + pprint.pformat(dict(self.index_by_individual), compact=True))
+        print(self.name)
+        print("by individual: ", pprint.pformat(dict(self.index_by_individual), compact=True))
+        print("chronologically: ", pprint.pformat(self.samples_chronologically, compact=True))
 
     def __call__(self, gt_pred: Tuple[Batch, Dict[str, Tensor]]):
         gt, _ = gt_pred
@@ -92,6 +95,7 @@ class DrawPredictionsWithHistory:
         except KeyError:
             individual = "unkown"
         self.index_by_individual[individual].append(gt['index'].item())
+        self.samples_chronologically.append(gt['index'].item())
         return vis.draw_prediction(gt_pred)
 
 
@@ -296,7 +300,7 @@ def run(args):
     else:
         print(table_builder.build())
     pyplot.show()
-    print("Viewed samples per individual:")
+    print ("Viewed samples:")
     for thing in gui:
         if not isinstance(thing, DrawPredictionsWithHistory):
             continue

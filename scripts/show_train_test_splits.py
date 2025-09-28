@@ -40,7 +40,7 @@ def show_train_test_splits():
     parser.add_argument('--ds', help='Which datasets to train on. See code.', type=str, default='300wlp')
     parser.add_argument('--raug', default=30, type=float, dest='rotation_aug_angle')
     parser.add_argument('--no-imgaug', default=True, action='store_false', dest='with_image_aug')
-    parser.add_argument('--roi-override', default='extent_to_forehead', type=str, choices=['extent_to_forehead', 'original', 'landmarks'], dest='roi_override')
+    parser.add_argument('--roi-override', default='original', type=str, choices=['extent_to_forehead', 'original', 'landmarks'], dest='roi_override')
     args = parser.parse_args()
 
     dsids, dataset_weights = parse_dataset_definition(args.ds)

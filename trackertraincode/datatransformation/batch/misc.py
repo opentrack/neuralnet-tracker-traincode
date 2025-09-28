@@ -1,5 +1,6 @@
 from trackertraincode.facemodel.bfm import BFMModel, ScaledBfmModule
 from trackertraincode.neuralnets.modelcomponents import PosedDeformableHead
+from trackertraincode.neuralnets.rotrepr import QuatRepr
 from trackertraincode.pipelines import Batch
 
 import torch
@@ -10,12 +11,14 @@ class PutRoiFromLandmarks(object):
         self.extend_to_forehead = extend_to_forehead
         self.headmodel = PosedDeformableHead(ScaledBfmModule(BFMModel()))
 
-    def _create_roi(self, landmarks3d, sample):
+    def _create_roi(self, landmarks3d : torch.Tensor, sample):
+        shapeparams = sample['shapeparam'] if 'shapeparams' in sample else landmarks3d.new_zeros((50,))
         if self.extend_to_forehead:
             vertices = self.headmodel(
                 sample['coord'],
-                sample['pose'],
-                sample['shapeparam'])
+                QuatRepr(sample['pose']),
+                shapeparams
+                )
             min_ = torch.amin(vertices[...,:2], dim=-2)
             max_ = torch.amax(vertices[...,:2], dim=-2)
         else:

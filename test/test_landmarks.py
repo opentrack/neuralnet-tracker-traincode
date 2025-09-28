@@ -10,7 +10,8 @@ from torchvision.transforms import Compose
 from torch import nn
 import torch
 
-from trackertraincode.neuralnets.modelcomponents import DeformableHeadKeypoints, rigid_transformation_25d, PosedDeformableHead
+from trackertraincode.neuralnets.modelcomponents import DeformableHeadKeypoints, PosedDeformableHead
+from trackertraincode.neuralnets.rotrepr import QuatRepr
 from trackertraincode.datasets.batch import Batch
 import trackertraincode.datatransformation as dtr
 from trackertraincode.datasets.dshdf5pose import Hdf5PoseDataset
@@ -30,7 +31,7 @@ def test_landmarks():
         ]))
     batch = Batch.collate([smpl for smpl in ds])
     with torch.no_grad():
-        pred = headmodel(batch['coord'],batch['pose'],batch['shapeparam'])
+        pred = headmodel(batch['coord'],QuatRepr(batch['pose']),batch['shapeparam'])
     target = batch['pt3d_68']
     diff = torch.mean(torch.norm(pred-target, dim=-1),axis=-1)
 
