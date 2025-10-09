@@ -310,6 +310,7 @@ def run(args):
             for roi_config in roi_configs:
                 gui += report(net_filename, name, roi_config, args, table_builder)
     if args.json:
+        assert args.json.endswith(".json")
         print(f"writing {args.json}")
         with open(args.json, "w") as f:
             f.write(table_builder.build_json())

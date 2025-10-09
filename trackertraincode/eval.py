@@ -444,7 +444,7 @@ def _compute_displacement(mean_rot: Rotation, rots: Rotation):
     return (mean_rot.inv() * rots).as_rotvec()
 
 
-def _compute_mean_rotation(rots: Rotation, tol=0.0001, max_iter=100000):
+def compute_mean_rotation(rots: Rotation, tol=0.0001, max_iter=100000):
     # Adapted from https://github.com/pcr-upm/opal23_headpose/blob/main/test/evaluator.py#L111C1-L126C27
     # Exclude samples outside the sphere of radius pi/2 for convergence
     rots = rots[rots.magnitude() < np.pi / 2]
@@ -471,7 +471,7 @@ def compute_opal_paper_alignment(
         mask = cluster_ids == id_
         pred_rot = Rotation.from_quat(pose_pred[mask].numpy())
         target_rot = Rotation.from_quat(pose_target[mask].numpy())
-        align_rot = _compute_mean_rotation(target_rot.inv() * pred_rot)
+        align_rot = compute_mean_rotation(target_rot.inv() * pred_rot)
         # print (f"id = {id_}, align = {align_rot.magnitude()*180./np.pi}, {np.count_nonzero(mask)} items")
         # (P (T^-1 * P)^-1 )^-1 T
         #    ----+----

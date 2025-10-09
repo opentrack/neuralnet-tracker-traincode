@@ -95,7 +95,7 @@ def make_synface_dataset(transform=None):
     return ds
 
 
-def make_wflw_relabeled_dataset(transform=None, test_transform=None):
+def make_wflw_relabeled_datasets(transform=None):
     train = Hdf5PoseDataset(
         join(os.environ["DATADIR"], "wflw_train.h5"),
         transform=transform,
@@ -103,7 +103,7 @@ def make_wflw_relabeled_dataset(transform=None, test_transform=None):
     )
     test = Hdf5PoseDataset(
         join(os.environ["DATADIR"], "wflw_test.h5"),
-        transform=test_transform,
+        transform=transform,
         dataclass=Tag.ONLY_LANDMARKS_2D,
     )
     return train, test
@@ -142,12 +142,27 @@ def make_panoptic_datasets(transform=None):
 
 
 def make_replicant_face_datasets(transform=None):
-    ds = Hdf5PoseDataset(
+    """Custom dataset like face synthetics dataset but with pose annotations."""
+    train = Hdf5PoseDataset(
         join(os.environ["DATADIR"], "replicant-face-v4-like-300wlp.h5"),
         transform=transform,
         dataclass=Tag.POSE_WITH_LMKS_NO_SHAPE_PARAMS,
     )
-    return ds
+    test = Hdf5PoseDataset(
+        join(os.environ["DATADIR"], "replicant-face-eval.h5"),
+        transform=transform,
+        dataclass=Tag.POSE_WITH_LMKS_NO_SHAPE_PARAMS,
+    )
+    return train, test
+
+
+def make_replicant_face_stability_test(transform=None):
+    """Variations of background and facial expressions with poses held fixed."""
+    return Hdf5PoseDataset(
+        join(os.environ["DATADIR"], "replicant-face-stability-test-wider.h5"),
+        transform=transform,
+        dataclass=Tag.POSE_WITH_LMKS_NO_SHAPE_PARAMS,
+    )
 
 
 def make_panoptic_trainset(transform=None):
@@ -396,7 +411,6 @@ def make_pose_estimation_loaders(
         # There are over 70k frames in the latter but the labels are a bit shitty so I don't weight it as high.
         (Id.LAPA_MEGAFACE_LP, make_lapa_megaface_lp_dataset, 10000.0),
         (Id.PANOPTIC_CMU, make_panoptic_trainset, 20_000.0),
-        (Id.REPLICANT_FACE, make_replicant_face_datasets, 10_000.0),
     ]:
         if id not in datasets:
             continue
@@ -406,15 +420,13 @@ def make_pose_estimation_loaders(
         ds_with_sizes.append((id, len(train)))
 
     for id, ds_ctor, default_sample_weight in [
-        (Id.WFLW_RELABEL, make_wflw_relabeled_dataset, 10000.0)
+        (Id.WFLW_RELABEL, make_wflw_relabeled_datasets, 10000.0),
+        (Id.REPLICANT_FACE, make_replicant_face_datasets, 10_000.0),
     ]:
         if id not in datasets:
             continue
-        train, test = ds_ctor(
-            transform=C(headpose_train_trafo), test_transform=C(headpose_test_trafo)
-        )
+        train, _ = ds_ctor(transform=C(headpose_train_trafo))
         train_sets.append(train)
-        test_sets.append(test)
         train_sets_weight_list.append(dataset_weights.get(id, default_sample_weight))
         ds_with_sizes.append((id, len(train)))
 
@@ -575,9 +587,13 @@ def make_validation_dataset(
     elif name == "panoptic":
         ds = make_panoptic_datasets(transform=test_trafo)[1]
     elif name == "replicantface-train":
-        ds = make_replicant_face_datasets(transform=test_trafo)
+        ds, _ = make_replicant_face_datasets(transform=test_trafo)
         rng = np.random.default_rng(seed=42)
         ds = Subset(ds, rng.integers(0, len(ds) - 1, size=1000))
+    elif name == "replicantface-stability":
+        ds = make_replicant_face_stability_test(transform=test_trafo)
+    elif name == "replicantface":
+        _, ds = make_replicant_face_datasets(transform=test_trafo)
     else:
         assert False, f"Unknown dataset {name}"
 

@@ -24,6 +24,8 @@ import copy
 import glob
 import matplotlib
 import matplotlib.lines
+import matplotlib.patches
+import matplotlib.collections
 import pickle
 from torchvision.transforms import Compose
 import torchmetrics
@@ -520,6 +522,99 @@ def main_analyze_uncertainty_error_correlation(paths: List[str]):
     pyplot.show()
 
 
+def main_analyze_stability_vs_variations(checkpoints: List[str]):
+    """Shows the prediction variance within 'sequences' in the dataset.
+
+    This is intended to analyze variance wrt changes in environment and facial expressions.
+    To use it, the dataset should contain different individuals with fixed poses and 'sequences'
+    which are not actual sequences but contain different renderings with such variations.
+
+    The plot shows the yaw-pitch plane.
+    * Black X = GT
+    * Colored X = Mean rotation over the variations
+    * Colored circle = Kind of a rotational standard deviation over the variations.
+
+    For stability against environmental conditions and say, talking, the circles should be
+    small, whereas the X deviations from GT shows independent pose biases.
+    """
+
+    loader = trackertraincode.pipelines.make_validation_loader(
+        "replicantface-stability",
+        return_single_samples=True,
+        # order=np.arange(128)
+    )
+
+    def rotational_centers_and_deviations(quats, individuals):
+        uniques = np.unique(individuals)
+        out_means = []
+        out_deviations = []
+        for u in uniques:
+            rots = Rotation.from_quat(quats[individuals == u, :])
+            mean_rot = eval.compute_mean_rotation(rots)
+            deviations = np.average((mean_rot.inv() * rots).magnitude())
+            out_means.append(mean_rot)
+            out_deviations.append(deviations)
+        return Rotation.concatenate(out_means), np.stack(out_deviations)
+
+    def predict_all_nets(loader):
+        poses_vs_model = {}
+        for checkpoint in checkpoints:
+            predictor = eval.Predictor(checkpoint, device="cuda")
+            metrics = torchmetrics.MetricCollection(
+                {
+                    "pose": eval.PredExtractor("pose"),
+                    "individual": eval.LabelExtractor("individual"),
+                    "pose_gt": eval.LabelExtractor("pose"),
+                }
+            )
+            results = predictor.evaluate(metrics, loader)
+            quats = results.pop("pose")
+            hpb = utils.as_hpb(Rotation.from_quat(quats))
+            hpb_gt = utils.as_hpb(Rotation.from_quat(results.pop("pose_gt")))
+            individuals = results.pop("individual")
+            means, deviations = rotational_centers_and_deviations(quats, individuals)
+            poses_vs_model[checkpoint] = {
+                "hpb": hpb,
+                "hpb_gt": hpb_gt,
+                "means": utils.as_hpb(means),
+                "deviations": deviations,
+            }
+        return poses_vs_model
+
+    poses_vs_model = predict_all_nets(loader)
+
+    fig, axes = pyplot.subplots(1, 1, figsize=(10, 10))
+    ax = axes
+
+    def plot_rots(hpb, color, **kwargs):
+        hpb = hpb * 180.0 / np.pi
+        ax.scatter(hpb[:, 0], hpb[:, 1], c=color, s=kwargs.pop("s", 5.0), **kwargs)
+
+    def plot_circles(hpb, deviations, color):
+        hpb = hpb * 180.0 / np.pi
+        deviations = deviations * 180.0 / np.pi
+        circles = [
+            matplotlib.patches.Circle((x, y), radius=d, fill=False)
+            for (x, y, _), d in zip(hpb, deviations)
+        ]
+        c = matplotlib.collections.PatchCollection(circles, linewidth=1.0, ec=color, fc="none")
+        ax.add_collection(c)
+
+    if 1:  # Plot GT
+        gt = next(iter(poses_vs_model.values()))["hpb_gt"]
+        plot_rots(gt, "k", marker="x", s=50.0, label="GT")
+
+    for (name, poses), color in zip(poses_vs_model.items(), "rgbcmy"):
+        plot_rots(poses["means"], color, marker="x", label=name[-20:], s=50)
+        plot_circles(poses["means"], poses["deviations"], color)
+        print(f"Deviation ({name}): {np.average(poses['deviations'])*180./np.pi:.2f} deg")
+
+    ax.legend()
+    ax.axhline(0.0, color="k")
+    ax.axvline(0.0, color="k")
+    pyplot.show()
+
+
 if __name__ == "__main__":
     np.seterr(all="raise")
     parser = argparse.ArgumentParser(description="Evaluates the model")
@@ -531,6 +626,7 @@ if __name__ == "__main__":
             "open-loop",
             "noise-resist",
             "uncertainty-correlation",
+            "variation-resist",
         ],
         default="none",
     )
@@ -548,6 +644,8 @@ if __name__ == "__main__":
             main_vis_noise_resist(args.filename)
         else:
             main_analyze_noise_resist(args.filename)
+    elif args.mode == "variation-resist":
+        main_analyze_stability_vs_variations(args.filename)
     elif args.mode == "uncertainty-correlation":
         main_analyze_uncertainty_error_correlation(args.filename)
     else:

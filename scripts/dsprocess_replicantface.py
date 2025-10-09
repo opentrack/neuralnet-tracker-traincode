@@ -1,3 +1,5 @@
+import collections
+import itertools
 import numpy as np
 import h5py
 import argparse
@@ -11,6 +13,7 @@ from pprint import pprint
 from functools import lru_cache
 from numpy.typing import NDArray
 import cv2
+import re
 
 from trackertraincode.datasets.dshdf5pose import create_pose_dataset, FieldCategory
 from trackertraincode.datasets.preprocessing import depth_centered_keypoints, imread
@@ -207,15 +210,53 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Convert dataset")
     parser.add_argument("source", help="source file", type=str)
     parser.add_argument("destination", help="Destination file", type=str)
-    parser.add_argument("-n", dest="count", type=int, default=None)
+    parser.add_argument(
+        "--with-variation-postfix",
+        action="store_true",
+        default=False,
+        help="Expects face filenames in the format face_<num>_<postfix>.<ext>. "
+        "Samples from the same <num> will be packed in a sequence.",
+    )
+    parser.add_argument("-n", dest="count", type=int, default=None, help="Number of read samples.")
+    parser.add_argument(
+        "--write-limit",
+        type=int,
+        default=None,
+        help="Number of written samples. This may be different from -n because some samples might be filtered out.",
+    )
     args = parser.parse_args()
 
-    label_files = sorted(list(Path(args.source).glob("face_[0-9]*.npz")))
+    if not args.with_variation_postfix:
+        label_files = sorted(list(Path(args.source).glob("face_[0-9]*.npz")))
+        if args.count:
+            label_files = label_files[: args.count]
+        label_files = np.asarray(label_files, dtype=object)
+        individuals = np.arange(len(label_files))
+    else:
+        label_files = list(Path(args.source).glob("face_[0-9]*_*.npz"))
+        regex = re.compile(r"face_([0-9]*)_(.*)\.npz")
 
-    if args.count:
-        label_files = label_files[: args.count]
+        def groups(name: str):
+            m = regex.match(name)
+            assert m is not None
+            individual, variation = m.groups()
+            assert isinstance(individual, str)
+            assert isinstance(variation, str)
+            return individual, variation
 
-    label_files = np.asarray(label_files, dtype=object)
+        label_files_w_postfix = [(p, *groups(p.name)) for p in label_files]
+        label_files_w_postfix: list[tuple[Path, str, str]] = sorted(
+            label_files_w_postfix, key=lambda x: x[1:]
+        )
+        # The sorting should be kept when creating the dict, so variations will be sorted in the dict, too.
+        if args.count:
+            individual_set = frozenset(x[1] for x in label_files_w_postfix)
+            individual_set = frozenset(list(individual_set)[: args.count])
+            label_files_w_postfix = [x for x in label_files_w_postfix if x[1] in individual_set]
+        label_files = [x[0] for x in label_files_w_postfix]
+        individuals = [x[1] for x in label_files_w_postfix]
+        label_files = np.asarray(label_files, dtype=object)
+        individuals = np.asarray(individuals, dtype=object)
 
     print("processing: ", len(label_files))
 
@@ -249,16 +290,34 @@ if __name__ == "__main__":
 
     if 1:
         invalid_images = [str(fn) for fn in label_files[~is_valid_mask]]
-        print(f"Invalid images: {len(invalid_images)/len(label_files)*100:0.3f}%")
+        print(
+            f"Invalid images: {len(invalid_images)} ({len(invalid_images)/len(label_files)*100:0.3f}%)"
+        )
         pprint(invalid_images)
 
-    label_files = label_files[is_valid_mask]
-    rois = rois[is_valid_mask]
-    quats = quats[is_valid_mask]
-    xys = xys[is_valid_mask]
-    landmarks = landmarks[is_valid_mask]
+    (is_valid_idx,) = np.nonzero(is_valid_mask)
+    del is_valid_mask
+
+    if args.write_limit:
+        # TODO: fix for variations dataset
+        is_valid_idx = is_valid_idx[: args.write_limit]
+
+    label_files = label_files[is_valid_idx]
+    rois = rois[is_valid_idx]
+    quats = quats[is_valid_idx]
+    xys = xys[is_valid_idx]
+    landmarks = landmarks[is_valid_idx]
+    individuals = individuals[is_valid_idx]
+
+    print(f"Writing {len(label_files) } samples")
+
+    assert np.all(np.sort(individuals) == individuals)
 
     with h5py.File(args.destination, "w") as f:
+        if args.with_variation_postfix:
+            _, starts = np.unique(individuals, return_index=True)
+            sequence_starts = np.concatenate([starts, np.asarray([len(individuals)])])
+            f.create_dataset("sequence_starts", data=sequence_starts)
         create_pose_dataset(f, C.quat, data=quats)
         create_pose_dataset(f, C.xys, data=xys, dtype=np.float16)
         create_pose_dataset(f, C.roi, data=rois, dtype=np.float16)

@@ -9,7 +9,7 @@ import numpy as np
 
 from trackertraincode.eval import (
     PerspectiveCorrector,
-    _compute_mean_rotation,
+    compute_mean_rotation,
     compute_opal_paper_alignment,
 )
 
@@ -34,7 +34,7 @@ def test_mean_rotation():
         center_rot, 100, 60.0, np.random.RandomState(seed=123456)
     )
     # Test if the average matches the known mean
-    mean = _compute_mean_rotation(random_rots)
+    mean = compute_mean_rotation(random_rots)
     assert (mean.inv() * center_rot).magnitude() < 5.0 * np.pi / 180.0
 
 
