@@ -291,7 +291,7 @@ def create_net(args: MyArgs):
         enable_face_detector=False,
         config=args.backbone,
         enable_uncertainty=args.with_nll_loss,
-        backbone_args={},
+        backbone_args={"use_blurpool": args.with_blurpool},
         enable_6drot=args.enable_6drot,
     )
 
@@ -399,7 +399,7 @@ def main():
     parser.add_argument("--with-nll-loss", default=False, action="store_true")
     parser.add_argument("--raug", default=30, type=float, dest="rotation_aug_angle")
     parser.add_argument("--no-imgaug", default=True, action="store_false", dest="with_image_aug")
-    # parser.add_argument('--no-blurpool', default=True, action='store_false', dest='with_blurpool')
+    parser.add_argument("--blurpool", default=False, action="store_true", dest="with_blurpool")
     # parser.add_argument("--no-onnx", default=True, action="store_false", dest="export_onnx")
     parser.add_argument(
         "--roi-override",
