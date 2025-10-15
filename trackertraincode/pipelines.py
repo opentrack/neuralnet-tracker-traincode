@@ -519,8 +519,11 @@ def make_pose_estimation_loaders(
                 random_apply=4,
             ),
             dtr.batch.KorniaImageDistortions(
-                dtr.batch.RandomGaussianNoise(std=4.0 / 255.0, p=0.5),
-                dtr.batch.RandomGaussianNoise(std=16.0 / 255.0, p=0.1),
+                dtr.batch.RandomGaussianNoise(std=4.0 / 255.0, p=0.25),
+                dtr.batch.RandomGaussianNoise(std=16.0 / 255.0, p=0.25**2),
+                dtr.batch.RandomGaussianNoise(std=32.0 / 255.0, p=0.25**3),
+                dtr.batch.RandomGaussianNoise(std=64.0 / 255.0, p=0.25**4),
+                dtr.batch.OnlyClip(p=1.0),
             ),
         ]
     else:

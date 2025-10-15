@@ -23,11 +23,11 @@ from kornia.augmentation import (
     RandomGaussianNoise,
     RandomContrast,
     RandomBrightness,
+    IntensityAugmentationBase2D,
 )
 
 
 class KorniaImageDistortions(object):
-    @wraps(AugmentationSequential.__init__)
     def __init__(self, *args, **kwargs):
         self.augs = AugmentationSequential(*args, **kwargs)
 
@@ -51,3 +51,14 @@ class RandomGaussianNoiseWithClipping(RandomGaussianNoise):
         output = super().apply_transform(input, params, flags, transform)
         output = output.clip(0.0, 1.0)
         return output
+
+
+class OnlyClip(IntensityAugmentationBase2D):
+    def apply_transform(
+        self,
+        input: Tensor,
+        params: Dict[str, Tensor],
+        flags: Dict[str, Any],
+        transform: Tensor | None = None,
+    ) -> Tensor:
+        return input.clip(0.0, 1.0)

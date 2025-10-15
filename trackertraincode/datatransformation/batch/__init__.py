@@ -16,6 +16,7 @@ from .intensity import (
     RandomContrast,
     RandomBrightness,
     RandomGaussianNoise,
+    OnlyClip,
 )
 
 from .normalization import (
