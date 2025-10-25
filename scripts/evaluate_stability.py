@@ -608,6 +608,10 @@ def main_analyze_stability_vs_variations(checkpoints: List[str]):
         plot_rots(poses["means"], color, marker="x", label=name[-20:], s=50)
         plot_circles(poses["means"], poses["deviations"], color)
         print(f"Deviation ({name}): {np.average(poses['deviations'])*180./np.pi:.2f} deg")
+    if len(poses_vs_model) > 1:
+        print(
+            f"mean deviation: {np.average([poses['deviations'] for poses in poses_vs_model.values()])*180./np.pi:.2f} deg"
+        )
 
     ax.legend()
     ax.axhline(0.0, color="k")
