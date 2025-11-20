@@ -144,12 +144,12 @@ def make_panoptic_datasets(transform=None):
 def make_replicant_face_datasets(transform=None):
     """Custom dataset like face synthetics dataset but with pose annotations."""
     train = Hdf5PoseDataset(
-        join(os.environ["DATADIR"], "replicant-face-v4-like-300wlp.h5"),
+        join(os.environ["DATADIR"], "replicant-face-v4-wider-100k.h5"),
         transform=transform,
         dataclass=Tag.POSE_WITH_LMKS_NO_SHAPE_PARAMS,
     )
     test = Hdf5PoseDataset(
-        join(os.environ["DATADIR"], "replicant-face-eval.h5"),
+        join(os.environ["DATADIR"], "replicant-face-v4-eval-10k.h5"),
         transform=transform,
         dataclass=Tag.POSE_WITH_LMKS_NO_SHAPE_PARAMS,
     )
