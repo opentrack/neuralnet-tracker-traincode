@@ -195,10 +195,6 @@ def convert(filename: Path):
         landmarks = landmarks / landmarks[:, 3:]
     landmarks = _screen_to_image(landmarks[:, :3], img_size)
     landmarks = depth_centered_keypoints(landmarks.T).T
-    # print (landmarks.shape)
-    # print ('mproj\n',projection)
-    # print ('modelview', np.linalg.det(modelview[:3,:3]))
-    # print ('p', p)
     return quat, p[:3], bbox, landmarks
 
 
@@ -278,13 +274,7 @@ if __name__ == "__main__":
         np.asarray, zip(*[convert(lbl) for lbl in tqdm.tqdm(label_files, desc="label conversion")])
     )
 
-    # Points based ROI, which covers the face, just doesn't seem to be as good
-    # as the segmentation bases ROI which covers visible skin of the entire head.
-    # rois = roi_intersection(seg_rois, pts_rois)
-    rois = seg_rois
-    del seg_rois
-    del pts_rois
-    rw, rh = (rois[:, 2:] - rois[:, :2]).T
+    rw, rh = (seg_rois[:, 2:] - seg_rois[:, :2]).T
 
     is_valid_mask = is_valid_mask & (rw > 32) & (rh > 32)
 
@@ -303,7 +293,7 @@ if __name__ == "__main__":
         is_valid_idx = is_valid_idx[: args.write_limit]
 
     label_files = label_files[is_valid_idx]
-    rois = rois[is_valid_idx]
+    rois = pts_rois[is_valid_idx]
     quats = quats[is_valid_idx]
     xys = xys[is_valid_idx]
     landmarks = landmarks[is_valid_idx]
