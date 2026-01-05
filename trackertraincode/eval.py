@@ -69,6 +69,7 @@ def load_pose_network(filename, device) -> InferenceNetwork:
                     "cuda": ["CUDAExecutionProvider", "CPUExecutionProvider"],
                 }[device]
                 self.session = onnxruntime.InferenceSession(modelfile, providers=providers)
+
                 # TODO: decide on a names. Also for the OpenTrack plugin.
                 namemap = {
                     "pos_size": "coord",
@@ -86,7 +87,11 @@ def load_pose_network(filename, device) -> InferenceNetwork:
                 self.output_names = [
                     namemap.get(o.name, o.name) for o in self.session.get_outputs()
                 ]
+
                 # print ("Model version string: ", self.session.get_modelmeta().version, ' has outputs', self.output_names)
+                self._input_resolution = int(
+                    self.session.get_modelmeta().custom_metadata_map.get("input_resolution", "129")
+                )
 
                 if isinstance(self.session.get_inputs()[0].shape[0], int):
                     self._inference = _onnx_single_frame_inference
@@ -100,7 +105,7 @@ def load_pose_network(filename, device) -> InferenceNetwork:
 
             @property
             def input_resolution(self) -> int:
-                return 129  # TODO: this should somehow come from the model file
+                return self._input_resolution
 
             def __call__(self, batch):
                 outputs = self._inference(self.session, batch)
@@ -444,18 +449,39 @@ def _compute_displacement(mean_rot: Rotation, rots: Rotation):
     return (mean_rot.inv() * rots).as_rotvec()
 
 
-def compute_mean_rotation(rots: Rotation, tol=0.0001, max_iter=100000):
+def compute_mean_rotation(rots: Rotation, tol=0.0001, max_iter=100):
     # Adapted from https://github.com/pcr-upm/opal23_headpose/blob/main/test/evaluator.py#L111C1-L126C27
     # Exclude samples outside the sphere of radius pi/2 for convergence
-    rots = rots[rots.magnitude() < np.pi / 2]
+    _debug = False
+    if _debug:
+        from matplotlib import pyplot
+
+        fig, ax = pyplot.subplots(2, 2)
+        d_norms = []
+        displacements = []
+
     mean_rot = rots[0]
     for _ in range(max_iter):
         displacement = _compute_displacement(mean_rot, rots)
+        displacement = displacement[np.linalg.norm(displacement, axis=-1) < np.pi / 2]
         displacement = np.mean(displacement, axis=0)
         d_norm = np.linalg.norm(displacement)
+        if _debug:
+            d_norms.append(d_norm)
+            displacements.append(displacement)
+
         if d_norm < tol:
             break
-        mean_rot = mean_rot * Rotation.from_rotvec(displacement)
+        mean_rot = mean_rot * Rotation.from_rotvec(0.5 * displacement)
+
+    if _debug:
+        displacements = np.asarray(displacements)
+        print(displacements)
+        ax[0, 0].plot(d_norms)
+        ax[0, 1].plot(*displacements[:, :2].T)
+        ax[1, 1].scatter(*rots.as_rotvec()[:, :2].T)
+        pyplot.show()
+
     return mean_rot
 
 

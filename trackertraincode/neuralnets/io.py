@@ -39,5 +39,9 @@ def load_model(filename: str, class_candidates: Container[type]):
     class_name = contents["class_name"]
     class_ = {c.__name__: c for c in class_candidates}[class_name]
     instance: SavableModel = class_(**contents["config"])
-    instance.load_state_dict(contents["state_dict"], strict=True)
+    try:
+        instance.load_state_dict(contents["state_dict"], strict=True)
+    except RuntimeError as e:
+        msg = f"Failed to load f{contents['class_name']} with config f{contents['config']}"
+        raise RuntimeError(msg) from e
     return instance

@@ -3,9 +3,7 @@ from torch import Tensor
 import numpy as np
 
 """
-Inspired by Yi Zhou et al. "On the Continuity of Rotation Representations in Neural Networks" (2020)
-
-
+Inspired by Yi Zhou et al. "On the Continuity of Rotation Representations in Neural Networks" (2020).
 """
 
 

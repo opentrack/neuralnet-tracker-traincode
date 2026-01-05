@@ -74,12 +74,15 @@ def _resize(img, new_w, new_h, downfilter: DownFilters, upfilter: UpFilters) -> 
             "area": cv2.INTER_AREA,
         }[filter]
         return cv2.resize(img, dsize=(new_w, new_h), interpolation=interp)
-    else:
-        return cv2.resize(
-            _apply_antialias_filter(img, scale_factor, filter),
-            dsize=(new_w, new_h),
-            interpolation=cv2.INTER_LINEAR,
-        )
+    if filter == "gaussian":
+        while img.shape[0] >= 2 * new_h and img.shape[1] >= 2 * new_w:
+            img = cv2.pyrDown(img)
+        scale_factor = 0.5 * (new_w / old_w + new_h / old_h)
+    return cv2.resize(
+        _apply_antialias_filter(img, scale_factor, filter),
+        dsize=(new_w, new_h),
+        interpolation=cv2.INTER_LINEAR,
+    )
 
 
 def affine_transform_image_cv2(
@@ -137,7 +140,7 @@ def affine_transform_image_cv2(
 
 def croprescale_image_cv2(
     img: Tensor,
-    roi: Tensor,
+    roi: Tensor | None,
     new_size: Union[int, Tuple[int, int]],
     downfilter: Optional[DownFilters] = None,
     upfilter: Optional[UpFilters] = None,
@@ -145,10 +148,11 @@ def croprescale_image_cv2(
     upfilter = "linear" if upfilter is None else upfilter
     downfilter = "area" if downfilter is None else downfilter
     new_w, new_h = _extract_size_tuple(new_size)
-    img = ensure_image_nhwc(img)
-    img = _numpy_extract_roi(img.numpy(), roi)
-    img = _resize(img, new_w, new_h, downfilter, upfilter)
-    img = torch.from_numpy(img)
+    img_np = ensure_image_nhwc(img).numpy()
+    if roi is not None:
+        img_np = _numpy_extract_roi(img_np, roi)
+    img_np = _resize(img_np, new_w, new_h, downfilter, upfilter)
+    img = torch.from_numpy(img_np)
     if img.ndim == 2:  # Add back channel dimension which might have been removed by opencv
         img = img[..., None]
     img = ensure_image_nchw(img)

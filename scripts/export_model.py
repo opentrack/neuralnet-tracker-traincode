@@ -6,6 +6,7 @@ import torch
 import copy
 import tqdm
 import itertools
+import warnings
 
 from torch.ao.quantization import get_default_qconfig_mapping, QConfig, QConfigMapping
 from torch.ao.quantization.quantize_fx import convert_fx, prepare_fx
@@ -17,6 +18,8 @@ import onnx.shape_inference
 import onnxsim
 import torch.nn as nn
 import onnx
+
+from trackertraincode.neuralnets.rotrepr import Mat33Repr, QuatRepr
 
 try:
     import onnxruntime as ort
@@ -33,21 +36,31 @@ import trackertraincode.pipelines
 os.environ["OMP_NUM_THREADS"] = "1"
 
 
-def clear_denormals(state_dict, threshold=1.0e-20):
+def clear_denormals(state_dict, threshold=1.0e-20, verbose=True):
     # I tuned the threshold so I don't see a performance
     # decrease compared to pretrained weights from torchvision.
     # The real denormals start below 2.*10^-38
     # Denormals make computations on CPU very slow .. at least back then ...
     state_dict = {k: v.detach().clone() for k, v in state_dict.items()}
-    print("Denormals or zeros:")
+    if verbose:
+        print("Denormals or zeros:")
     for k, v in state_dict.items():
         if v.dtype == torch.float32:
             mask = torch.abs(v) > threshold
             n = torch.count_nonzero(~mask)
-            if n:
+            if n and verbose:
                 print(f"{k:40s}: {n:10d} ({n/np.prod(v.shape)*100}%)")
             v *= mask.to(torch.float32)
     return state_dict
+
+
+def check_weights(state_dict: dict[str, torch.Tensor]):
+    bad = []
+    for k, v in state_dict.items():
+        if v.dtype not in (torch.long, torch.float32):
+            bad.append(f"{k}: {v.dtype}")
+    if bad:
+        raise ValueError(f"Tensors with bad dtype found: {', '.join(bad)}")
 
 
 def quantize_backbone(original: trackertraincode.neuralnets.models.NetworkWithPointHead):
@@ -57,12 +70,18 @@ def quantize_backbone(original: trackertraincode.neuralnets.models.NetworkWithPo
     train_loader, _, _ = trackertraincode.pipelines.make_pose_estimation_loaders(
         inputsize=original.input_resolution,
         batchsize=128,
-        datasets=[dsid.REPO_300WLP, dsid.REPLICANT_FACE, dsid.LAPA_MEGAFACE_LP, dsid.WFLW_LP],
+        datasets=[
+            dsid.REPO_300WLP,
+            dsid.REPLICANT_FACE,
+            dsid.LAPA_MEGAFACE_LP,
+            dsid.WFLW_LP,
+            dsid.PANOPTIC_CMU,
+        ],
         dataset_weights={},
         use_weights_as_sampling_frequency=True,
         enable_image_aug=True,
         rotation_aug_angle=30.0,
-        roi_override="original",
+        roi_override="extent_to_forehead",
         device=None,
     )
     example_input = (next(iter(train_loader))[0]["image"],)
@@ -129,7 +148,7 @@ class ModelForOpenTrack(nn.Module):
         ]
         if original.enable_uncertainty:
             self._output_name_map += [
-                ("coord_scales", "pos_size_scales_tril"),
+                ("coord_scales", "pos_size_scales"),
                 ("pose_scales_tril", "rotaxis_scales_tril"),
             ]
 
@@ -147,7 +166,7 @@ class ModelForOpenTrack(nn.Module):
 
 
 class ExportModel(nn.Module):
-    def __init__(self, original: nn.Module):
+    def __init__(self, original: trackertraincode.neuralnets.models.NetworkWithPointHead):
         super().__init__()
         self._original = original
         self.input_names = ["x"]
@@ -165,8 +184,11 @@ class ExportModel(nn.Module):
         return self._original.input_resolution
 
     def forward(self, x):
-        y = self._original(x)
-        return tuple(y[k] for k in self.output_names)
+        outputs = self._original(x)
+        for k, y in outputs.items():
+            if isinstance(y, (QuatRepr, Mat33Repr)):
+                outputs[k] = y.value
+        return tuple(outputs[k] for k in self.output_names)
 
 
 def load_facelocalizer(args):
@@ -200,9 +222,13 @@ def compare_network_outputs(torchmodel, ort_session, inputs):
 
 @torch.no_grad()
 def convert_posemodel_onnx(
-    net: nn.Module, filename, for_opentrack=True, quantize=False, fp16=False
+    net: nn.Module, filename, for_opentrack=True, quantize=False, fp16=False, verbose=True
 ):
-    net.load_state_dict(clear_denormals(net.state_dict()))
+    sd = net.state_dict()
+    check_weights(sd)
+    sd = clear_denormals(sd, verbose=verbose)
+    net.load_state_dict(sd)
+    del sd
     if quantize:
         net = quantize_backbone(net)
     if for_opentrack:
@@ -227,37 +253,53 @@ def convert_posemodel_onnx(
         destination += "_complete"
     destination += ".onnx"
 
-    print(f"Exporting {net.__class__}, input size = {H},{W} to {destination}")
+    if verbose:
+        print(f"Exporting {net.__class__}, input size = {H},{W} to {destination}")
 
     dynamic_axes = (
         None if for_opentrack else {k: {0: "batch"} for k in (net.input_names + net.output_names)}
     )
 
-    torch.onnx.export(
-        net,  # model being run
-        inputs,  # model input (or a tuple for multiple inputs)
-        destination,  # where to save the model (can be a file or file-like object)
-        training=torch.onnx.TrainingMode.EVAL,
-        export_params=True,  # store the trained parameter weights inside the model file
-        opset_version=13,  # the ONNX version to export the model to
-        do_constant_folding=True,  # whether to execute constant folding for optimization
-        keep_initializers_as_inputs=False,
-        input_names=net.input_names,
-        output_names=net.output_names,
-        dynamic_axes=dynamic_axes,
-        verbose=False,
-    )
-
-    # torch.onnx.dynamo_export(
-    #     net,  # model being run
-    #     inputs,  # model input (or a tuple for multiple inputs)
-    #     export_options=torch.onnx.ExportOptions(
-    #         dynamic_shapes=False,
-    #     )).save(destination)
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            "Converting a tensor to a Python integer might cause the trace to be incorrect",
+            torch.jit.TracerWarning,
+            "kornia.filters.kernels",
+        )
+        warnings.filterwarnings(
+            "ignore",
+            "Converting a tensor to a Python integer might cause the trace to be incorrect",
+            torch.jit.TracerWarning,
+            "kornia.core.check",
+        )
+        warnings.filterwarnings(
+            "ignore",
+            r"Converting a tensor to a Python boolean might cause the trace to be incorrect(([\r\t\n]|.)*)assert",
+            torch.jit.TracerWarning,
+            r"trackertraincode\..*",
+        )
+        torch.onnx.export(
+            net,  # model being run
+            inputs,  # model input (or a tuple for multiple inputs)
+            destination,  # where to save the model (can be a file or file-like object)
+            training=torch.onnx.TrainingMode.EVAL,
+            export_params=True,  # store the trained parameter weights inside the model file
+            opset_version=20,  # the ONNX version to export the model to
+            do_constant_folding=True,  # whether to execute constant folding for optimization
+            keep_initializers_as_inputs=False,
+            input_names=net.input_names,
+            output_names=net.output_names,
+            dynamic_axes=dynamic_axes,
+            verbose=False,
+        )
 
     onnxmodel = onnx.load(destination)
     onnxmodel.doc_string = "Head pose prediction"
     onnxmodel.model_version = 4  # This must be an integer or long.
+    onnxmodel.metadata_props.append(
+        onnx.StringStringEntryProto(key="input_resolution", value=str(net.input_resolution))
+    )
 
     onnxmodel = onnx.shape_inference.infer_shapes(onnxmodel)
 
@@ -275,7 +317,8 @@ def convert_posemodel_onnx(
         ort_session = ort.InferenceSession(
             onnxmodel.SerializeToString(), providers=["CPUExecutionProvider"]
         )
-        print_io_info(ort_session)
+        if verbose:
+            print_io_info(ort_session)
         compare_network_outputs(net, ort_session, inputs)
 
 
@@ -338,6 +381,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.posemodelfilename:
         net = trackertraincode.neuralnets.models.load_model(args.posemodelfilename)
+        print(f"Exporting {type(net).__name__} with config {net.get_config()}")
         convert_posemodel_onnx(
             net,
             args.posemodelfilename,

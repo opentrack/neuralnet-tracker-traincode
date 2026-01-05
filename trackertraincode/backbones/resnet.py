@@ -74,28 +74,50 @@ class ResNetBackbone(nn.Module):
 
         self.num_features = 512
 
-        # def grab_output(dest : dict, name : str, model, input, output):
-        #     dest[name] = output
+        def grab_output(dest: dict, name: str, model, input, output):
+            dest[name] = output
 
-        # self.dest = {}
+        self.dest = {}
 
-        # self.layers[4].register_forward_hook(partial(grab_output,self.dest, 'z33'))
-        # self.layers[5].register_forward_hook(partial(grab_output,self.dest, 'z17'))
-        # self.layers[6].register_forward_hook(partial(grab_output,self.dest, 'z9'))
-        # self.layers[7].register_forward_hook(partial(grab_output,self.dest, 'z5'))
+        self.layers[4].register_forward_hook(partial(grab_output, self.dest, "z33"))
+        self.layers[5].register_forward_hook(partial(grab_output, self.dest, "z17"))
+        self.layers[6].register_forward_hook(partial(grab_output, self.dest, "z9"))
+        self.layers[7].register_forward_hook(partial(grab_output, self.dest, "z5"))
 
-        # self.num_intermediate_features = [ 64, 126, 256, 512 ]
+        self.num_intermediate_features = [64, 126, 256, 512]
 
     def forward(self, x):
         y = self.layers(x)
-        # z = [ self.dest[k] for k in 'z33 z17 z9 z5'.split(' ') ]
-        # self.dest.clear()
-        return y, None
+        z = [self.dest[k] for k in "z33 z17 z9 z5".split(" ")]
+        self.dest.clear()
+        return y, z
 
 
 def resnet18(use_blurpool: bool = False):
     net = ResNetBackbone(
         layers=[2, 2, 2, 2],
+        weights=None,
+        progress=True,
+        zero_init_residual=True,
+        use_blurpool=use_blurpool,
+    )
+    return net
+
+
+def resnet34(use_blurpool: bool = False):
+    net = ResNetBackbone(
+        layers=[3, 4, 6, 3],
+        weights=None,
+        progress=True,
+        zero_init_residual=True,
+        use_blurpool=use_blurpool,
+    )
+    return net
+
+
+def resnet(l1: int, l2: int, l3: int, l4: int, use_blurpool: bool = False):
+    net = ResNetBackbone(
+        layers=[l1, l2, l3, l4],
         weights=None,
         progress=True,
         zero_init_residual=True,

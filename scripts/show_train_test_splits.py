@@ -36,6 +36,26 @@ def visualize(loader, loader_outputs_list_of_batches=False):
     pyplot.show()
 
 
+def profile_loader(train_loader):
+    num_iter = 100
+    import time
+
+    # import cProfile
+    it = iter(train_loader)
+    for _ in range(100):  # Warmup
+        next(it)
+    start_time = time.time()
+    # with cProfile.Profile() as pr:
+    items_obtained = 0
+    for _ in range(num_iter):
+        batches = next(it)
+        items_obtained += sum(b.meta.batchsize for b in batches)
+    # pr.print_stats(sort='cumulative')
+    duration = time.time() - start_time
+    del it
+    print(f"Throughput: {num_iter / duration:0.2f} iters/sec | {items_obtained} total samples")
+
+
 def show_train_test_splits():
     parser = argparse.ArgumentParser(description="Trains the model")
     parser.add_argument(
@@ -57,6 +77,7 @@ def show_train_test_splits():
         choices=["extent_to_forehead", "original", "landmarks"],
         dest="roi_override",
     )
+    parser.add_argument("--profile", default=False, action="store_true")
     args = parser.parse_args()
 
     dsids, dataset_weights = parse_dataset_definition(args.ds)
@@ -71,8 +92,11 @@ def show_train_test_splits():
         rotation_aug_angle=args.rotation_aug_angle,
         roi_override=args.roi_override,
     )
-    visualize(train_loader, loader_outputs_list_of_batches=True)
-    visualize(test_loader)
+    if not args.profile:
+        visualize(train_loader, loader_outputs_list_of_batches=True)
+        visualize(test_loader)
+    else:
+        profile_loader(train_loader)
 
 
 if __name__ == "__main__":

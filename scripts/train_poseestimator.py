@@ -7,7 +7,7 @@ import torch.multiprocessing
 
 torch.multiprocessing.set_sharing_strategy("file_system")
 
-from typing import List, NamedTuple, Optional, Any, Mapping
+from typing import List, Literal, NamedTuple, Optional, Any, Mapping
 from os.path import join, dirname, realpath
 import numpy as np
 import cv2
@@ -55,9 +55,9 @@ class MyArgs(argparse.Namespace):
     input_size: int
     roi_override: str
     with_roi_train: bool
-    dropout_prob: float
     rampup_nll_losses: bool
-    enable_6drot: bool
+    rotrepr: Literal["quat", "6d"]
+    compile: bool
 
 
 def parse_dataset_definition(arg: str):
@@ -128,25 +128,27 @@ def find_transformer_parameters(net: nn.Module):
         return sum((find_transformer_parameters(x) for x in net.children()), start=[])
 
 
-def setup_lr_with_slower_variance_training(net, base_lr):
-    variance_params = find_variance_parameters(net)
-    transformer_params = find_transformer_parameters(net)
-    # print ("Transformer param shapes: ", [p.shape for p in transformer_params])
+def setup_parameter_groups(net: nn.Module, base_lr):
+    assert isinstance(net, models.NetworkWithPointHead)
+    variance_params = frozenset(find_variance_parameters(net))
+    transformer_params = frozenset(find_transformer_parameters(net))
+    backbone_params = frozenset(net.convnet.parameters()) - transformer_params
     other_params = list(
         frozenset(net.parameters()).difference(
-            frozenset(variance_params) | frozenset(transformer_params)
+            variance_params | transformer_params | backbone_params
         )
     )
     return [
-        {"params": other_params, "lr": base_lr},
-        {"params": variance_params, "lr": 0.1 * base_lr},
-        {"params": transformer_params, "lr": 0.01 * base_lr, "weight_decay": 0.01},
+        {"params": list(other_params), "lr": base_lr, "weight_decay": 0.0},
+        {"params": list(backbone_params), "lr": base_lr, "weight_decay": 0.0},
+        {"params": list(transformer_params), "lr": 0.01 * base_lr, "weight_decay": 0.01},
+        {"params": list(variance_params), "lr": base_lr, "weight_decay": 0.0},
     ]
 
 
 def create_optimizer(net, args: MyArgs):
-    optimizer = optim.Adam(
-        setup_lr_with_slower_variance_training(net, args.lr),
+    optimizer = optim.AdamW(
+        setup_parameter_groups(net, args.lr),
         lr=args.lr,
     )
     # if args.find_lr:
@@ -159,28 +161,35 @@ def create_optimizer(net, args: MyArgs):
 
     n_epochs = args.epochs
     # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, [n_epochs//2], 0.1)
-    scheduler = train.ExponentialUpThenSteps(
-        optimizer, max(1, n_epochs // (10)), 0.1, [n_epochs // 2]
-    )
-    # scheduler = train.LinearUpThenSteps(optimizer, max(1,n_epochs//(10)), 0.1, [n_epochs//2])
+    # scheduler = train.ExponentialUpThenSteps(
+    #     optimizer, max(1, n_epochs // (10)), 0.1, [n_epochs // 2]
+    # )
+    scheduler = train.LinearUpThenSteps(optimizer, 5, 0.1, [n_epochs // 2])
 
     return optimizer, scheduler
 
 
 def setup_losses(args: MyArgs, net):
+    enable_shape_nll = True
+    enable_roi_nll = True
     rot_loss = (
-        losses.Rot6dReprLoss() if args.enable_6drot else losses.QuatPoseLoss("approx_distance")
+        losses.Rot6dReprLoss()
+        if args.rotrepr in ("6d",)
+        else losses.QuatPoseLoss("geodesic").cuda()
     )
-    rot_constraint = (
-        losses.Rot6dNormalizationSoftConstraint()
-        if args.enable_6drot
-        else losses.QuaternionNormalizationSoftConstraint()
-    )
+    rot_constraint = {
+        "6d": losses.Rot6dNormalizationSoftConstraint(),
+        "quat": losses.QuaternionNormalizationSoftConstraint(),
+    }.get(args.rotrepr, None)
 
     C = train.Criterion
-    cregularize = [
-        C("quatregularization1", rot_constraint, 1.0e-6),
-    ]
+    cregularize = (
+        [
+            C("quatregularization1", rot_constraint, 1.0e-6),
+        ]
+        if rot_constraint is not None
+        else []
+    )
     poselosses = []
     roilosses = []
     pointlosses = []
@@ -200,20 +209,26 @@ def setup_losses(args: MyArgs, net):
             else:
                 return multiplier * 0.01
 
+        rot_nll_loss = NLL.QuatPoseNLLLoss("laplace").cuda()
+
         poselosses += [
-            C("nllrot", NLL.QuatPoseNLLLoss().to("cuda"), ramped_up_nll_weight(0.5)),
-            C("nllcoord", NLL.CorrelatedCoordPoseNLLLoss().cuda(), ramped_up_nll_weight(0.5)),
+            C("nllrot", rot_nll_loss.cuda(), ramped_up_nll_weight(1.0 / 6.0)),
+            C(
+                "nllcoord",
+                NLL.CoordPoseNLLLoss("laplace", 0.5, 0.5).cuda(),
+                ramped_up_nll_weight(0.5),
+            ),
         ]
-        if args.with_roi_train:
+        if args.with_roi_train and enable_roi_nll:
             roilosses += [
-                C("nllbox", NLL.BoxNLLLoss(distribution="gaussian"), ramped_up_nll_weight(0.01))
+                C("nllbox", NLL.BoxNLLLoss(distribution="laplace"), ramped_up_nll_weight(0.01))
             ]
         if args.with_pointhead:
             pointlosses += [
                 C(
                     "nllpoints3d",
                     NLL.Points3dNLLLoss(
-                        chin_weight=0.8, eye_weight=0.0, distribution="gaussian"
+                        chin_weight=0.8, eye_weight=0.0, distribution="laplace"
                     ).cuda(),
                     ramped_up_nll_weight(0.5),
                 )
@@ -222,27 +237,32 @@ def setup_losses(args: MyArgs, net):
                 C(
                     "nllpoints3d",
                     NLL.Points3dNLLLoss(
-                        chin_weight=0.8, eye_weight=0.0, pointdimension=2, distribution="gaussian"
+                        chin_weight=0.8, eye_weight=0.0, pointdimension=2, distribution="laplace"
                     ).cuda(),
                     ramped_up_nll_weight(0.5),
                 )
             ]
+        if args.with_pointhead and enable_shape_nll:
             shapeparamloss += [
-                # C('nllshape', NLL.ShapeParamsNLLLoss(distribution='gaussian'), ramped_up_nll_weight(0.01))
+                C(
+                    "nllshape",
+                    NLL.ShapeParamsNLLLoss(distribution="laplace").cuda(),
+                    ramped_up_nll_weight(0.1),
+                )
             ]
     if 1:
         poselosses += [
             C("rot", rot_loss, 1.0),
-            C("xy", losses.PoseXYLoss("l2"), 0.5 * 0.5),
-            C("sz", losses.PoseSizeLoss("l2"), 0.5 * 0.5),
+            C("xy", losses.PoseXYLoss("l1").cuda(), 0.5 * 0.5),
+            C("sz", losses.PoseSizeLoss("l1").cuda(), 0.5 * 0.5),
         ]
         if args.with_roi_train:
-            roilosses += [C("box", losses.BoxLoss("l2"), 0.01)]
+            roilosses += [C("box", losses.BoxLoss("l1"), 0.01)]
         if args.with_pointhead:
             pointlosses += [
                 C(
                     "points3d",
-                    losses.Points3dLoss("l2", chin_weight=0.8, eye_weights=0.0).cuda(),
+                    losses.Points3dLoss("l1", chin_weight=0.8, eye_weights=0.0).cuda(),
                     0.5,
                 ),
             ]
@@ -250,13 +270,13 @@ def setup_losses(args: MyArgs, net):
                 C(
                     "points3d",
                     losses.Points3dLoss(
-                        "l2", pointdimension=2, chin_weight=0.8, eye_weights=0.0
+                        "l1", pointdimension=2, chin_weight=0.8, eye_weights=0.0
                     ).cuda(),
                     0.5,
                 ),
             ]
             shapeparamloss += [
-                C("shp_l2", losses.ShapeParameterLoss(), 0.1),
+                C("shp", losses.ShapeParameterLoss("l1").cuda(), 0.1),
             ]
             cregularize += [
                 C("nll_shp_gmm", losses.ShapePlausibilityLoss().cuda(), 0.1),
@@ -290,9 +310,11 @@ def create_net(args: MyArgs):
         enable_point_head=args.with_pointhead,
         enable_face_detector=False,
         config=args.backbone,
+        use_local_pose_offset=True,
         enable_uncertainty=args.with_nll_loss,
-        backbone_args={"use_blurpool": args.with_blurpool},
-        enable_6drot=args.enable_6drot,
+        backbone_args={"use_blurpool": args.with_blurpool, "dropout_prob": 0.5},
+        rotrepr=args.rotrepr,
+        input_resolution=args.input_size,
     )
 
 
@@ -303,6 +325,8 @@ class LitModel(pl.LightningModule):
         super().__init__()
         self._args = args
         self._model = create_net(args)
+        if args.compile:
+            self._model.compile(fullgraph=True)
         train_criterions, test_criterions = setup_losses(args, self._model)
         self._train_criterions = train_criterions
         self._test_criterions = test_criterions
@@ -359,16 +383,6 @@ def main():
     parser.add_argument(
         "--ds", help="Which datasets to train on. See code.", type=str, default="300wlp"
     )
-    # parser.add_argument(
-    #     "--no-plotting", help="Disable plotting of losses", action="store_false", default=True, dest="plotting"
-    # )
-    # parser.add_argument(
-    #     "--save-plot",
-    #     help="Filename to enable saving the train history as plot",
-    #     default=None,
-    #     type=str,
-    #     dest="plot_save_filename",
-    # )
     parser.add_argument(
         "--with-swa",
         help="Enable stochastic weight averaging",
@@ -410,7 +424,8 @@ def main():
     )
     parser.add_argument("--no-roi-train", default=True, action="store_false", dest="with_roi_train")
     parser.add_argument("--rampup-nll-losses", default=False, action="store_true")
-    parser.add_argument("--enable-6drot", default=False, action="store_true")
+    parser.add_argument("--rotrepr", default="quat", choices=["quat", "6d"])
+    parser.add_argument("--compile", "-c", default=False, action="store_true")
 
     args: MyArgs = parser.parse_args()
     args.input_size = 129
@@ -418,27 +433,19 @@ def main():
     train_loader, test_loader, _ = setup_datasets(args)
 
     model = LitModel(args)
-    model_out_dir = join(args.outdir, model.model.name)
-
-    checkpoint_cb = ModelCheckpoint(
-        save_top_k=1,
-        save_last=True,
-        monitor="val_loss",
-        enable_version_counter=False,
-        filename="best",
-        dirpath=model_out_dir,
-        save_weights_only=False,
-    )
+    model_out_dir = args.outdir
 
     progress_cb = train.SimpleProgressBar(args.batchsize)
     visu_cb = train.MetricsGraphing()
-    callbacks = [visu_cb, checkpoint_cb, progress_cb]
+    callbacks = [visu_cb, progress_cb]
     swa_callback = None
     if args.swa:
         swa_callback = train.SwaCallback(start_epoch=args.epochs * 2 // 3)
         callbacks.append(swa_callback)
 
-    # TODO: inf norm?
+    # TODO: measure gradient magnitude
+
+    torch.set_float32_matmul_precision("high")
     trainer = pl.Trainer(
         fast_dev_run=False,
         gradient_clip_val=1.0,
@@ -446,23 +453,17 @@ def main():
         default_root_dir=model_out_dir,
         limit_train_batches=((10 * 1024) // args.batchsize),
         callbacks=callbacks,
-        enable_checkpointing=True,
+        enable_checkpointing=False,
         max_epochs=args.epochs,
         log_every_n_steps=10,
         logger=False,
         enable_progress_bar=False,
+        precision="16-mixed",
     )
 
     trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=test_loader)
 
     visu_cb.close()
-
-    if checkpoint_cb is not None:
-        # Overwrite the lightning checkpoint!
-        model = LitModel.load_from_checkpoint(checkpoint_cb.last_model_path, args=args).to("cpu")
-        models.save_model(model.model, checkpoint_cb.last_model_path)
-        model = LitModel.load_from_checkpoint(checkpoint_cb.best_model_path, args=args).to("cpu")
-        models.save_model(model.model, checkpoint_cb.best_model_path)
 
 
 if __name__ == "__main__":

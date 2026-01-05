@@ -1,7 +1,8 @@
+from typing import Any
 import numpy as np
 import pickle
 from os.path import join, dirname
-
+import copy
 import torch
 import torch.nn as nn
 
@@ -83,7 +84,6 @@ class ScaledBfmModule(nn.Module):
         super().__init__()
         self.register_buffer("vertices", torch.from_numpy(original.scaled_vertices))
         self.register_buffer("deform_base", torch.from_numpy(original.scaled_bases))
-        self.register_buffer("tri", torch.from_numpy(original.scaled_tri))
         self.register_buffer("keypoints", torch.from_numpy(original.keypoints).to(torch.long))
 
     @property
@@ -95,3 +95,16 @@ class ScaledBfmModule(nn.Module):
         verts = torch.sum(verts, dim=-3)
         verts += self.vertices
         return verts
+
+    def downsampled(self, new_num_vertices: int, rng: Any) -> "ScaledBfmModule":
+        clone = copy.deepcopy(self)
+        num_vertices = clone.vertices.size(0)
+        num_keypoints = len(self.keypoints)
+        assert new_num_vertices >= num_keypoints
+        assert num_vertices >= 38_000
+        selection = rng.choice(num_vertices, new_num_vertices, replace=False)
+        selection[:num_keypoints] = self.keypoints.cpu().numpy()
+        clone.vertices = clone.vertices[selection, :].contiguous()
+        clone.deform_base = clone.deform_base[:, selection, :].contiguous()
+        clone.keypoints = torch.arange(num_keypoints)
+        return clone

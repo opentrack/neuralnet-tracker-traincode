@@ -10,6 +10,7 @@ import h5py
 
 from kornia.filters.kernels import get_pascal_kernel_2d
 from kornia.filters.blur_pool import _blur_pool_by_kernel2d
+from kornia.filters.median import _compute_zero_padding
 from trackertraincode.neuralnets.math import smoothclip0
 from trackertraincode.neuralnets.modelcomponents import nn
 
@@ -196,12 +197,21 @@ class BlurPool2D(nn.Module):
         super().__init__()
         self.kernel_size = kernel_size
         self.stride = stride
+        self.kernel: torch.Tensor
         self.register_buffer("kernel", get_pascal_kernel_2d(kernel_size, norm=True))
         self.channels = channels
 
     def forward(self, input: Tensor) -> Tensor:
-        return _blur_pool_by_kernel2d(
-            input, self.kernel.repeat((self.channels, 1, 1, 1)), self.stride
+        kernel = self.kernel.repeat((self.channels, 1, 1, 1))
+        padding = _compute_zero_padding((kernel.shape[-2], kernel.shape[-1]))
+        return nn.functional.conv2d(
+            input,
+            kernel,
+            dilation=(1, 1),
+            padding=padding,
+            stride=(self.stride, self.stride),
+            groups=self.channels,
+            bias=None,
         )
 
 

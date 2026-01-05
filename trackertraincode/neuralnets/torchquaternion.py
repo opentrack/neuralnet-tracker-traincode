@@ -236,21 +236,41 @@ def geodesicdistance(a, b):
     return rotation_delta(a, b).norm(dim=-1)
 
 
-def quat_average(quats):
-    quats = np.asarray(quats)
-    # Ensemble size, number of samples, dimensionality
-    E, N, D = quats.shape
-    assert D == 4
-    # Sum over ensemble to get an idea of the largest axis on average.
-    # Then find the actual longest axis, i.e. i,j,k or w.
-    pivot_axes = np.argmax(np.sum(np.abs(quats), axis=0), axis=-1)
-    assert pivot_axes.shape == (N,)
-    mask = np.take_along_axis(quats, pivot_axes[None, :, None], axis=-1) < 0.0
-    mask = mask[..., 0]  # Skip quaternion dimension
-    quats[mask, :] *= -1
-    quats = np.average(quats, axis=0)
-    norms = np.linalg.norm(quats, axis=-1, keepdims=True)
-    if not np.all(norms > 0.5):
-        print("Oh oh either quat_average is bugged or rotations predictions differ wildly")
-    quats /= norms
-    return quats
+def quat_average(
+    rots: Tensor, weights: Tensor | None, tol: float | None = None, max_iter=5, eps=1.0e-6
+):
+    # Adapted from https://github.com/pcr-upm/opal23_headpose/blob/main/test/evaluator.py#L111C1-L126C27
+    _debug = False
+    if _debug:
+        from matplotlib import pyplot
+
+        d_norms = []
+        mean_rots = []
+
+    overshoot_factor = 1.1
+    cutoff = 3.0 / 2.0 * torch.pi / 2.0
+    mean_rot = rots[..., 0, :]  # shape (...,4)
+    for _ in range(max_iter):
+        displacement = rotation_delta(
+            mean_rot[..., None, :].expand_as(rots), rots
+        )  # shape (...,N,3)
+        # Exclude samples outside the sphere of radius pi/2 for convergence
+        weight = (torch.norm(displacement, dim=-1, keepdim=True) < cutoff).to(torch.float)
+        if weights is not None:
+            weight = weight * weights[:, :, None]
+        # weight = torch.nn.functional.relu(1. - torch.norm(displacement,dim=-1,keepdim=True) / cutoff)
+        mean_displacement = (displacement * weight).sum(dim=-2) / (weight.sum(dim=-2) + eps)
+        d_norm = torch.norm(mean_displacement, dim=-1)
+        if tol and (d_norm.detach() < tol).all().cpu().item():
+            break
+        mean_rot = mult(mean_rot, from_rotvec(overshoot_factor * mean_displacement))
+        if _debug:
+            d_norms.append(d_norm[0].detach().cpu().item())
+            mean_rots.append(mean_rot[0].detach().cpu().numpy())
+    if _debug:
+        fig, ax = pyplot.subplots(1, 2)
+        mean_rots = np.asarray(mean_rots)
+        ax[0].plot(d_norms)
+        ax[1].plot(*mean_rots[:, :2].T)
+        pyplot.show()
+    return mean_rot

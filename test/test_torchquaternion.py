@@ -1,4 +1,5 @@
 import numpy as np
+from numpy.typing import NDArray
 import torch
 from scipy.spatial.transform import Rotation
 from matplotlib import pyplot
@@ -16,6 +17,7 @@ from trackertraincode.neuralnets.torchquaternion import (
     to_rotvec,
     tomatrix,
     distance,
+    quat_average,
 )
 
 
@@ -177,3 +179,59 @@ def test_loss():
 
     # pyplot.scatter(delta, loss)
     # pyplot.show()
+
+
+@pytest.mark.parametrize("use_weights", [True, False])
+def test_compute_mean_rotation_with_weights(*, use_weights: bool):
+    N = 32
+    Noffsets = 1024
+    # No convergence for too large scatter. At least not to the expected center. Below 70 deg it work pretty well.
+    offset_std = 0.8 * np.pi / 2.0
+    max_iter = 16
+
+    rot_means = Rotation.random(N)
+    offsets = np.random.normal(size=(N, Noffsets, 3))
+    offsets = offsets * offset_std
+
+    rot_batch: list[Rotation] | torch.Tensor = []
+    weight_batch: torch.Tensor | list[NDArray[np.floating]] | None = []
+    if use_weights:
+        for mean in rot_means:
+            rots = Rotation.random(num=Noffsets)
+            delta = (mean.inv() * rots).as_rotvec()
+            x = np.linalg.norm(delta, axis=-1) / offset_std
+            weights: NDArray[np.floating] = np.exp(-x * x)
+            rot_batch.append(rots)
+            weight_batch.append(weights)
+    else:
+        for mean, offset in zip(rot_means, offsets):
+            rot_offset = Rotation.from_rotvec(offset)
+            rot = mean * rot_offset
+            rot_batch.append(rot)
+        weight_batch = None
+
+    quat_batch = torch.from_numpy(np.stack([r.as_quat() for r in rot_batch]))
+    weight_batch = torch.from_numpy(np.stack(weight_batch)) if weight_batch else None
+
+    if torch.cuda.is_available():
+        quat_batch.to("cuda")
+        if isinstance(weight_batch, torch.Tensor):
+            weight_batch.to("cuda")
+
+    assert isinstance(weight_batch, (type(None), torch.Tensor))
+    mean_quat = quat_average(quat_batch, weight_batch, max_iter=max_iter)
+
+    mean_quat = mean_quat.cpu()
+    estimated_means = Rotation.from_quat(mean_quat.numpy())
+
+    deltas = (rot_means.inv() * estimated_means).magnitude()
+    print(
+        f"Diff from average: {deltas * 180. / np.pi} deg vs exact std of the offsets: {offset_std*180/np.pi}"
+    )
+
+    random_pick_deltas = np.linalg.norm(offsets[:, 0, :], axis=-1)
+    print(
+        f"Average offset {np.average(deltas) * 180. / np.pi} vs random picks {np.average(random_pick_deltas) * 180. / np.pi}"
+    )
+
+    assert np.average(deltas) < 0.1 * np.average(random_pick_deltas)

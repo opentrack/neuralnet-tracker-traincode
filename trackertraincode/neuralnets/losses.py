@@ -13,10 +13,32 @@ import trackertraincode.neuralnets.torch6drotation as torch6drotation
 from trackertraincode.neuralnets.modelcomponents import GaussianMixture
 from trackertraincode.neuralnets.rotrepr import RotationRepr, QuatRepr, Mat33Repr
 
-SimpleLossSwitch = Literal["l2", "smooth_l1"]
+import robust_loss_pytorch.adaptive
+
+
+class AdaptiveLoss(robust_loss_pytorch.adaptive.AdaptiveLossFunction):
+    def __init__(self):
+        super().__init__(
+            num_dims=1,
+            float_dtype=np.float32,
+            device=0,
+            alpha_lo=0.0,
+            alpha_hi=0.0,
+            scale_lo=0.1,
+            scale_init=0.1,
+        )
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        d = (x - y).view(-1, 1)
+        l = self.lossfun(d)
+        return l.view(x.shape)
+
+
+SimpleLossSwitch = Literal["l2", "smooth_l1", "l1", "adaptive"]
 LOSS_OBJECT_MAP: Mapping[SimpleLossSwitch, Any] = {
     "l2": torch.nn.MSELoss(reduction="none"),
     "l1": torch.nn.L1Loss(reduction="none"),
+    "adaptive": AdaptiveLoss(),
     "smooth_l1": torch.nn.SmoothL1Loss(reduction="none", beta=0.01),
 }
 
@@ -32,19 +54,40 @@ def smooth_geodesic_distance(pred, target):
     )
 
 
-SimpleRotLossSwitch = Literal["approx_distance", "smooth_geodesic"]
+class AdaptiveGeodesicDistance(robust_loss_pytorch.adaptive.AdaptiveLossFunction):
+    def __init__(self):
+        super().__init__(
+            num_dims=1,
+            float_dtype=np.float32,
+            device=0,
+            alpha_lo=0.0,
+            alpha_hi=0.0,
+            scale_lo=0.1,
+            scale_init=0.1,
+        )
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        gd = torchquaternion.geodesicdistance(x, y)
+        l = self.lossfun(gd.view(-1, 1))
+        return l.view(*gd.shape)
+
+
+SimpleRotLossSwitch = Literal["approx_distance", "smooth_geodesic", "adaptive_geodesic", "geodesic"]
 LOSS_FUNC_MAP_FOR_ROTATION = {
     "approx_distance": torchquaternion.distance,
     "smooth_geodesic": smooth_geodesic_distance,
+    "adaptive_geodesic": AdaptiveGeodesicDistance(),
+    "geodesic": torchquaternion.geodesicdistance,
 }
 
 
-class QuatPoseLoss(object):
+class QuatPoseLoss(nn.Module):
     def __init__(self, loss: SimpleRotLossSwitch, prefix=""):
+        super().__init__()
         self._prefix = prefix
         self.loss_func = LOSS_FUNC_MAP_FOR_ROTATION[loss]
 
-    def __call__(self, pred, sample):
+    def forward(self, pred, sample):
         target: torch.Tensor = sample["pose"]
         quat: QuatRepr = pred[self._prefix + "rot"]
         return self.loss_func(quat.value, target)
@@ -64,36 +107,42 @@ class Rot6dNormalizationSoftConstraint:
         return torch6drotation.orthonormality_loss(pred)
 
 
-class PoseSizeLoss(object):
+class PoseSizeLoss(nn.Module):
     def __init__(self, loss: SimpleLossSwitch, prefix=""):
+        super().__init__()
         self._prefix = prefix
         self.loss_obj = LOSS_OBJECT_MAP[loss]
 
-    def __call__(self, pred, sample):
+    def forward(self, pred, sample):
         target = sample["coord"][..., 2]
         coord = pred[self._prefix + "coord"][..., 2]
         loss = self.loss_obj(coord, target)
         return loss
 
 
-class PoseXYLoss(object):
+class PoseXYLoss(nn.Module):
     def __init__(self, loss: SimpleLossSwitch, prefix=""):
+        super().__init__()
         self._prefix = prefix
         self.loss_obj = LOSS_OBJECT_MAP[loss]
 
-    def __call__(self, pred, sample):
+    def forward(self, pred, sample):
         target = sample["coord"][..., :2]
         coord = pred[self._prefix + "coord"][..., :2]
         loss = self.loss_obj(coord, target).mean(dim=-1)
         return loss
 
 
-class ShapeParameterLoss(object):
+class ShapeParameterLoss(nn.Module):
+    def __init__(self, loss: SimpleLossSwitch):
+        super().__init__()
+        self.loss_obj = LOSS_OBJECT_MAP[loss]
+
     def eval_on_params(self, pred, target):
-        lossvals = F.mse_loss(pred, target, reduction="none").mean(dim=-1)
+        lossvals = self.loss_obj(pred, target).mean(dim=-1)
         return lossvals
 
-    def __call__(self, pred, sample):
+    def forward(self, pred, sample):
         return self.eval_on_params(pred["shapeparam"], sample["shapeparam"])
 
 
@@ -160,13 +209,14 @@ class Points3dLoss(nn.Module):
         return self._eval_on_points(pred[self._prefix + "pt3d_68"], sample["pt3d_68"])
 
 
-class BoxLoss(object):
+class BoxLoss(nn.Module):
     def __init__(self, loss: SimpleLossSwitch, dataname="roi"):
+        super().__init__()
         self.dataname = dataname
         self.loss_obj = LOSS_OBJECT_MAP[loss]
 
     # Regression loss for bounding box prediction
-    def __call__(self, pred, sample):
+    def forward(self, pred, sample):
         # Only train this if the image shows a face
         target = sample[self.dataname]
         pred = pred[self.dataname]

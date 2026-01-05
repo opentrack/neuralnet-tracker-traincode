@@ -1,3 +1,4 @@
+import copy
 from os.path import join, dirname
 import os
 from matplotlib import projections, pyplot
@@ -9,6 +10,7 @@ from functools import partial
 from torchvision.transforms import Compose
 from torch import nn
 import torch
+from scipy.spatial.transform import Rotation
 
 from trackertraincode.neuralnets.modelcomponents import DeformableHeadKeypoints, PosedDeformableHead
 from trackertraincode.neuralnets.rotrepr import QuatRepr
@@ -16,6 +18,7 @@ from trackertraincode.datasets.batch import Batch
 import trackertraincode.datatransformation as dtr
 from trackertraincode.datasets.dshdf5pose import Hdf5PoseDataset
 import trackertraincode.vis as vis
+from trackertraincode.facemodel.bfm import BFMModel, ScaledBfmModule
 
 # TODO: rename to test_modelcomponents.py
 
@@ -49,6 +52,40 @@ def test_landmarks():
             pyplot.show()
 
     assert torch.max(diff) < 0.01, f"Landmark reconstruction error too large: {torch.max(diff)}"
+
+
+def _roi(x):
+    min_ = torch.amin(x[..., :2], dim=-2)
+    max_ = torch.amax(x[..., :2], dim=-2)
+    return torch.cat([min_, max_], dim=0)
+
+
+@torch.no_grad()
+def test_subsampled_face():
+    rng = np.random.default_rng(seed=1337)
+    coord = torch.as_tensor([0.0, 0.0, 1.0])
+    shapeparam = torch.zeros((50,))
+    quat = QuatRepr(
+        torch.from_numpy(Rotation.random(num=100, random_state=rng).as_quat()).to(torch.float32)
+    )
+
+    rng = np.random.default_rng(seed=29387)
+    headmodel = PosedDeformableHead(ScaledBfmModule(BFMModel()))
+    downsampled = PosedDeformableHead(headmodel.deformable_head.downsampled(2048, rng))
+
+    assert headmodel.deformable_head.vertices.size(0) > 10000
+    assert downsampled.deformable_head.vertices.size(0) == 2048
+    assert downsampled.deformable_head is not headmodel.deformable_head
+
+    reference_points = headmodel(coord, quat, shapeparam)
+    downsampled_points = downsampled(coord, quat, shapeparam)
+
+    headsize = reference_points.abs().max().item()
+    assert 0.9 <= headsize <= 1.2
+
+    reference_rois = _roi(reference_points)
+    downsampled_rois = _roi(downsampled_points)
+    np.testing.assert_allclose(downsampled_rois, reference_rois, atol=0.035)
 
 
 if __name__ == "__main__":

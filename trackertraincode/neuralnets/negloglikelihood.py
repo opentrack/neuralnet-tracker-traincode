@@ -8,6 +8,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
+import robust_loss_pytorch.distribution
+
 from trackertraincode.neuralnets.math import sqrclip0, inv_sqrclip0, smoothclip0, inv_smoothclip0
 import trackertraincode.facemodel.keypoints68 as kpts68
 import trackertraincode.neuralnets.torchquaternion as Q
@@ -24,26 +26,28 @@ class Neck(nn.Module):
         super().__init__()
         self.num_out_features = num_out_features
         self.num_in_features = num_in_features
-        self.lin = nn.Linear(num_in_features, num_out_features + 1)
-        self.lin.bias.data[...] = inv_make_positive(torch.ones((num_out_features + 1)))
+        self.lin = nn.Linear(num_in_features, num_out_features, bias=True)
+        self.lin.bias.data[...] = inv_make_positive(torch.ones((num_out_features)))
 
     def set_biases(self, x: Tensor):
-        self.lin.bias.data[..., 1:] = x
+        self.lin.bias.data[...] = x
 
     def forward(self, x: Tensor):
         x = self.lin(x)
-        return x[..., 1:], make_positive(x[..., :1])
+        return x
 
 
 class FeaturesAsDiagonalScale(nn.Module):
-    def __init__(self, num_in_features, num_out_features):
+    def __init__(self, num_in_features, num_out_features, init_values=None):
         super().__init__()
         self.neck = Neck(num_in_features, num_out_features)
-        self.eps = torch.tensor(1.0e-6)  # Prevent numerical problems due to too small variance
+        if init_values is not None:
+            self.neck.set_biases(inv_make_positive(init_values))
+        self.eps = 1.0e-6  # Prevent numerical problems due to too small variance
 
     def forward(self, x: Tensor):
-        x, multiplier = self.neck(x)
-        x = make_positive(x) * multiplier + self.eps
+        x = self.neck(x)
+        x = make_positive(x) + self.eps
         return x
 
 
@@ -53,11 +57,13 @@ class DiagonalScaleParameter(nn.Module):
     which starts off as 1 and is guaranteed to be always positive.
     """
 
-    def __init__(self, num_out_features):
+    def __init__(self, num_out_features, init_values=None):
         super().__init__()
-        initial_values = inv_make_positive(torch.ones((num_out_features + 1,)))
-        self.hidden_scale = nn.Parameter(initial_values.requires_grad_(True), requires_grad=True)
-        self.eps = torch.tensor(1.0e-6)
+        vals = inv_make_positive(torch.ones((num_out_features + 1,)))
+        if init_values is not None:
+            vals[1:] = inv_make_positive(init_values)
+        self.hidden_scale = nn.Parameter(vals.requires_grad_(True), requires_grad=True)
+        self.eps = 1.0e-6
 
     def forward(self):
         return (
@@ -65,65 +71,134 @@ class DiagonalScaleParameter(nn.Module):
         )
 
 
-SimpleDistributionSwitch = Literal["gaussian", "laplace"]
-DISTRIBUTION_CLASS_MAP = {"gaussian": Normal, "laplace": Laplace}
+class AdaptiveDistribution:
+    def __init__(self, center, scale):
+        self._dist = robust_loss_pytorch.distribution.Distribution()
+        self._center, self._scale = torch.broadcast_tensors(center, scale)
+
+    def log_prob(self, target: torch.Tensor) -> torch.Tensor:
+        nll = self._dist.nllfun(
+            target - self._center, alpha=torch.full_like(self._center, 0.0), scale=self._scale
+        )
+        return -nll
+
+
+SimpleDistributionSwitch = Literal["gaussian", "laplace", "adaptive"]
+DISTRIBUTION_CLASS_MAP = {"gaussian": Normal, "laplace": Laplace, "adaptive": AdaptiveDistribution}
+
+
+def _fill_triangular_matrix(dim: int, z: Tensor):
+    """
+    dim: Matrix dimension
+    z:  Tensor with values to fill into the lower triangular part.
+        First the diagonal amounting to `dim` values. Then offdiagonals.
+    """
+
+    if dim == 3:
+        # Special case for our application because ONNX does not support tril_indices
+        m = z[
+            ...,
+            (
+                0,
+                0,
+                0,
+                3,
+                1,
+                0,
+                4,
+                5,
+                2,
+            ),
+        ].view(*z.shape[:-1], 3, 3)
+        m = m * z.new_tensor([[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [1.0, 1.0, 1.0]])
+        return m
+    else:
+        # General case
+        m = z.new_zeros(z.shape[:-1] + (dim, dim))
+        idx = torch.tril_indices(dim, dim, -1, device=z.device)
+        irow, icol = idx[0], idx[1]
+        # Ellipsis for the batch dimensions is not supported by the script compiler.
+        # The tracer does unfortunately also produce wrong results, messing up some indexing
+        m[:, irow, icol] = z[..., dim:]
+        i = torch.arange(dim, device=z.device)
+        m[:, i, i] = z[:, :dim]
+        return m
+
+
+class FeaturesAsTriangularScale(nn.Module):
+    def __init__(self, num_in_features, dim):
+        super().__init__()
+        self.dim = dim
+        self.num_matrix_params = (dim * (dim + 1)) // 2
+        self.neck = Neck(num_in_features, self.num_matrix_params)
+        bias_init = inv_make_positive(torch.full((self.num_matrix_params,), fill_value=3.14))
+        bias_init[self.dim :] = 0.0  # Offdiagonals
+        self.neck.set_biases(bias_init)
+        min_diag = torch.full((self.num_matrix_params,), 1.0e-6)
+        min_diag[self.dim :] = 0.0  # Offdiagonals
+        self.register_buffer("min_diag", min_diag)
+
+    def forward(self, x: Tensor):
+        x = self.neck(x)
+        z = torch.cat([make_positive(x[..., : self.dim]), x[..., self.dim :]], dim=-1)
+        z = z + self.min_diag
+        return _fill_triangular_matrix(self.dim, z)
+
+
+class TangentSpaceRotationDistribution(object):
+    def __init__(
+        self, quat: Tensor, scale_tril: Optional[Tensor] = None, precision: Optional[Tensor] = None
+    ):
+        self.dist = MultivariateNormal(
+            quat.new_zeros(quat.shape[:-1] + (3,)),
+            scale_tril=scale_tril,
+            precision_matrix=precision,
+            validate_args=not sys.flags.optimize,
+        )
+        self.quat = quat
+
+    def log_prob(self, otherquat: Tensor):
+        rotvec = Q.rotation_delta(self.quat, otherquat)
+        return self.dist.log_prob(rotvec)
+
+
+class QuatPoseNLLLoss(nn.Module):
+    def __init__(
+        self,
+        distribution: SimpleDistributionSwitch = "gaussian",
+    ):
+        super().__init__()
+        self.distribution_class = DISTRIBUTION_CLASS_MAP[distribution]
+
+    def __call__(self, preds, sample):
+        target = sample["pose"]
+        rot: RotationRepr = preds["rot"]
+        cov = preds["pose_scales"]
+        rotangle = Q.geodesicdistance(rot.as_quat(), target)
+        return -self.distribution_class(torch.zeros_like(rotangle), cov).log_prob(rotangle)
 
 
 class CoordPoseNLLLoss(nn.Module):
     def __init__(
         self,
-        xy_weight: float,
-        head_size_weight: float,
         distribution: SimpleDistributionSwitch = "gaussian",
+        xy_weight: float = 1.0,
+        sz_weight: float = 1.0,
     ):
         super().__init__()
-        self.register_buffer(
-            "weights",
-            torch.as_tensor(
-                [xy_weight / 2.0, xy_weight / 2.0, head_size_weight], dtype=torch.float32
-            ),
-        )
         self.distribution_class = DISTRIBUTION_CLASS_MAP[distribution]
+        # Added 0.5 to take the mean of both coordinates.
+        self.register_buffer(
+            "weights", torch.as_tensor([xy_weight * 0.5, xy_weight * 0.5, sz_weight])
+        )
+        self.weights: Tensor
 
     def __call__(self, preds, sample):
         target = sample["coord"]
         pred = preds["coord"]
         scale: Tensor = preds["coord_scales"]
-        return (
-            -self.distribution_class(pred, scale)
-            .log_prob(target)
-            .mul(self.weights[None, :])
-            .mean(dim=-1)
-        )
-
-
-class MixWithUniformProbability(nn.Module):
-    def __init__(self, state_space_volume):
-        super().__init__()
-        self.register_buffer("log_uniform_prob", -torch.as_tensor([state_space_volume]).log())
-        self.register_buffer("log_weights", torch.as_tensor([[0.999, 0.001]]).log())
-
-    def __call__(self, log_prob):
-        log_uniform = torch.broadcast_to(self.log_uniform_prob, log_prob.shape)
-        return torch.logsumexp(
-            torch.stack([log_prob, log_uniform], dim=-1) + self.log_weights, dim=-1
-        )
-
-
-class CorrelatedCoordPoseNLLLoss(nn.Module):
-    def __init__(self):
-        super().__init__()
-        # Space volume = [-1,1]x[-1,1]x[0,1]
-        self.uniform_mixing = MixWithUniformProbability(4.0)
-
-    def __call__(self, preds, sample):
-        target = sample["coord"]
-        pred = preds["coord"]
-        scale: Tensor = preds["coord_scales"]
-        log_prob = MultivariateNormal(
-            pred, scale_tril=scale, validate_args=not sys.flags.optimize
-        ).log_prob(target)
-        return -self.uniform_mixing(log_prob)
+        log_probs: Tensor = self.distribution_class(pred, scale).log_prob(target)
+        return log_probs.mul(self.weights).sum(dim=-1).mul(-1.0)
 
 
 class BoxNLLLoss(nn.Module):
@@ -175,100 +250,3 @@ class ShapeParamsNLLLoss(nn.Module):
         pred, scales, target = preds["shapeparam"], preds["shapeparam_scales"], sample["shapeparam"]
         loss = -self.distribution_class(pred, scales).log_prob(target)
         return loss.mean(dim=-1)
-
-
-###########################################################
-## Tangent space gaussian rotation distribution
-###########################################################
-## There is the little problem that this distribution
-## is not normalized over SO3 ...
-
-
-def _fill_triangular_matrix(dim: int, z: Tensor):
-    """
-    dim: Matrix dimension
-    z:  Tensor with values to fill into the lower triangular part.
-        First the diagonal amounting to `dim` values. Then offdiagonals.
-    """
-
-    if dim == 3:
-        # Special case for our application because ONNX does not support tril_indices
-        m = z[
-            ...,
-            (
-                0,
-                0,
-                0,
-                3,
-                1,
-                0,
-                4,
-                5,
-                2,
-            ),
-        ].view(*z.shape[:-1], 3, 3)
-        m = m * z.new_tensor([[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [1.0, 1.0, 1.0]])
-        return m
-    else:
-        # General case
-        m = z.new_zeros(z.shape[:-1] + (dim, dim))
-        idx = torch.tril_indices(dim, dim, -1, device=z.device)
-        irow, icol = idx[0], idx[1]
-        # Ellipsis for the batch dimensions is not supported by the script compiler.
-        # The tracer does unfortunately also produce wrong results, messing up some indexing
-        m[:, irow, icol] = z[..., dim:]
-        i = torch.arange(dim, device=z.device)
-        m[:, i, i] = z[:, :dim]
-        return m
-
-
-class FeaturesAsTriangularScale(nn.Module):
-    def __init__(self, num_in_features, dim):
-        super().__init__()
-        self.dim = dim
-        self.num_matrix_params = (dim * (dim + 1)) // 2
-        self.neck = Neck(num_in_features, self.num_matrix_params)
-        bias_init = inv_make_positive(torch.ones((self.num_matrix_params)))
-        bias_init[self.dim :] = 0.0  # Offdiagonals
-        self.neck.set_biases(bias_init)
-        min_diag = torch.full((self.num_matrix_params,), 1.0e-6)
-        min_diag[self.dim :] = 0.0  # Offdiagonals
-        self.register_buffer("min_diag", min_diag)
-
-    def forward(self, x: Tensor):
-        x, multiplier = self.neck(x)
-        z = torch.cat([make_positive(x[..., : self.dim]), x[..., self.dim :]], dim=-1)
-        z = multiplier * z + self.min_diag
-        return _fill_triangular_matrix(self.dim, z)
-
-
-class TangentSpaceRotationDistribution(object):
-    def __init__(
-        self, quat: Tensor, scale_tril: Optional[Tensor] = None, precision: Optional[Tensor] = None
-    ):
-        self.dist = MultivariateNormal(
-            quat.new_zeros(quat.shape[:-1] + (3,)),
-            scale_tril=scale_tril,
-            precision_matrix=precision,
-            validate_args=not sys.flags.optimize,
-        )
-        self.quat = quat
-
-    def log_prob(self, otherquat: Tensor):
-        rotvec = Q.rotation_delta(self.quat, otherquat)
-        return self.dist.log_prob(rotvec)
-
-
-class QuatPoseNLLLoss(nn.Module):
-    def __init__(self):
-        super().__init__()
-        r = torch.pi
-        v = r * r * r * torch.pi * 4.0 / 3.0
-        self.uniform_mixing = MixWithUniformProbability(v)
-
-    def __call__(self, preds, sample):
-        target = sample["pose"]
-        rot: RotationRepr = preds["rot"]
-        cov = preds["pose_scales_tril"]
-        log_prob = TangentSpaceRotationDistribution(rot.as_quat(), cov).log_prob(target)
-        return -self.uniform_mixing(log_prob)

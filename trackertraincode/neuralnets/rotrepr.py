@@ -5,7 +5,7 @@ from typing import Any, Type
 
 import trackertraincode.neuralnets.torch6drotation as torch6drotation
 import trackertraincode.neuralnets.torchquaternion as torchquaternion
-from trackertraincode.neuralnets.math import smoothclip0
+from trackertraincode.neuralnets.math import smoothclip0, rotvec_to_matrix
 
 
 @dataclasses.dataclass
@@ -89,6 +89,11 @@ class Mat33Repr:
     def from_6drepr_features(cls: Type["Mat33Repr"], z: Tensor) -> "Mat33Repr":
         return Mat33Repr(torch6drotation.tomatrix(z))
 
+    @classmethod
+    def from_rotvec(cls: Type["Mat33Repr"], rotvec: Tensor) -> "Mat33Repr":
+        return Mat33Repr(rotvec_to_matrix(rotvec))
+
+    @torch.compiler.disable()
     def as_quat(self) -> Tensor:
         return torchquaternion.from_matrix(self.value)
 

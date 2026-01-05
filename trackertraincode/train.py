@@ -1,4 +1,5 @@
 import itertools
+from pathlib import Path
 from matplotlib import pyplot
 from collections import namedtuple, defaultdict
 import numpy as np
@@ -102,11 +103,11 @@ class History:
     train: List[Any] = dataclasses.field(default_factory=list)
     test: List[Any] = dataclasses.field(default_factory=list)
     current_train_buffer: List[Any] = dataclasses.field(default_factory=list)
-    logplot: bool = True
+    logplot: bool = False
 
 
 class TrainHistoryPlotter(object):
-    def __init__(self, save_filename=None):
+    def __init__(self, save_filename: Path | str | None = None):
         self.histories = defaultdict(History)
         self.queue = multiprocessing.Queue(maxsize=100)
         self.plotting = multiprocessing.Process(
@@ -188,7 +189,9 @@ class TrainHistoryPlotter(object):
         return fig, axes, num_rows
 
     @staticmethod
-    def run_plotting(queue_, save_filename):
+    def run_plotting(queue_, save_filename: Path | str | None):
+        if save_filename:
+            save_filename = Path(save_filename)
         histories = None
         fig, axes, num_rows = pyplot.figure(figsize=(10, 10)), None, 0
         fig.show()
@@ -202,6 +205,7 @@ class TrainHistoryPlotter(object):
                 )
                 fig.canvas.draw_idle()
                 if save_filename:
+                    save_filename.parent.mkdir(parents=True, exist_ok=True)
                     fig.savefig(save_filename)
             fig.canvas.flush_events()
             if keep_going:
@@ -595,12 +599,13 @@ def TriangularSchedule(optimizer, min_lr, lr, num_steps, *args, **kwargs):
     )
 
 
-def LinearUpThenSteps(optimizer, num_up, gamma, steps):
+def LinearUpThenSteps(optimizer, num_up, gamma, steps, min_lr_fraction=1.0e-3):
     steps = [0] + steps
 
     def lr_func(i):
         if i < num_up:
-            return (i + 1) / num_up
+            f = i / num_up
+            return min_lr_fraction * (1.0 - f) + f
         else:
             step_index = [j for j, step in enumerate(steps) if i > step][-1]
             return gamma**step_index

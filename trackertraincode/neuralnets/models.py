@@ -1,6 +1,7 @@
+import copy
 import itertools
 import math
-from typing import Union, Optional, List, Tuple, Dict, Any
+from typing import Literal, Union, Optional, List, Tuple, Dict, Any
 
 import torch
 import torch.nn as nn
@@ -23,8 +24,14 @@ from trackertraincode.neuralnets.rotrepr import Mat33Repr, QuatRepr
 import trackertraincode.neuralnets.torchquaternion as torchquaternion
 from trackertraincode.backbones.mobilenet_v1 import MobileNet
 from trackertraincode.backbones.efficientnet import EfficientNetBackbone
-from trackertraincode.backbones.resnet import resnet18
+from trackertraincode.backbones.resnet import resnet18, resnet34
 from trackertraincode.backbones.hybrid_vit import HybridVitBackbone
+from trackertraincode.backbones.other_torchvision import (
+    MobileNetV2Backbone,
+    MobileNetV3Backbone,
+    RegNetBackbone,
+    ConvNextBackbone,
+)
 
 
 class LocalizerNet(nn.Module):
@@ -94,15 +101,17 @@ class LocalizerNet(nn.Module):
 
 
 class Landmarks3dOutput(nn.Module):
-    def __init__(self, num_features, enable_uncertainty=False):
+    def __init__(
+        self, num_features, enable_points_uncertainty=False, enable_shape_uncertainty=False
+    ):
         super().__init__()
-        self.enable_uncertainty = enable_uncertainty
+        self.enable_points_uncertainty = enable_points_uncertainty
+        self.enable_shape_uncertainty = enable_shape_uncertainty
         self.deformablekeypoints = DeformableHeadKeypoints(40, 10)
         self.shapenet = nn.Linear(num_features, self.deformablekeypoints.num_eigvecs)
-        if self.enable_uncertainty:
-            # pointscales = NLL.FeaturesAsUncorrelatedVariance(num_features, 68, torch.full((68,)))
-            # shapescales = NLL.FeaturesAsUncorrelatedVariance(num_features, 50, torch.full((50,)))
-            self.point_distrib_scales = NLL.DiagonalScaleParameter(68)
+        if self.enable_points_uncertainty:
+            self.point_distrib_scales = NLL.DiagonalScaleParameter(68, init_values=0.5)
+        if self.enable_shape_uncertainty:
             self.shape_distrib_scales = NLL.DiagonalScaleParameter(50)
 
     def forward(self, z, quats, coords) -> Dict[str, Tensor]:
@@ -112,11 +121,11 @@ class Landmarks3dOutput(nn.Module):
         )
 
         out = {"pt3d_68": pt3d_68, "shapeparam": shapeparam}
-
-        if self.enable_uncertainty:
+        if self.enable_points_uncertainty:
             out.update(
                 {"pt3d_68_scales": self.point_distrib_scales()[None, :, None].expand_as(pt3d_68)}
             )
+        if self.enable_shape_uncertainty:
             out.update(
                 {"shapeparam_scales": self.shape_distrib_scales()[None, :].expand_as(shapeparam)}
             )
@@ -131,7 +140,7 @@ class DirectQuaternionWithNormalization(nn.Module):
         self.linear = nn.Linear(num_features, 4, bias=True)
         self.linear.bias.data[torchquaternion.iw] = inv_smoothclip0(torch.as_tensor(0.1))
         if enable_uncertainty:
-            self.uncertainty_net = NLL.FeaturesAsTriangularScale(num_features, 3)
+            self.uncertainty_net = NLL.FeaturesAsDiagonalScale(num_features, 1, init_values=1.0)
 
     def forward(self, x) -> Dict[str, Tensor]:
         z = self.linear(x)
@@ -144,7 +153,13 @@ class DirectQuaternionWithNormalization(nn.Module):
             scales = self.uncertainty_net(x)
             out.update(
                 {
-                    "pose_scales_tril": scales,
+                    "pose_scales": scales.squeeze(-1),
+                    "pose_scales_tril": NLL._fill_triangular_matrix(
+                        3,
+                        torch.cat(
+                            [scales.expand(-1, 3), torch.zeros_like(scales).expand(-1, 3)], dim=-1
+                        ),
+                    ),
                 }
             )
         return out
@@ -181,7 +196,7 @@ class BoundingBox(nn.Module):
         self.linear = nn.Linear(num_features, 4)
         self.linear.bias.data[...] = torch.tensor([0.0, 0.0, 0.5, 0.5])
         if enable_uncertainty:
-            self.scales = NLL.DiagonalScaleParameter(4)
+            self.scales = NLL.DiagonalScaleParameter(4, init_values=0.5)
 
     def forward(self, x: Tensor) -> Dict[str, Tensor]:
         z = self.linear(x)
@@ -205,7 +220,7 @@ class PositionSizeOutput(nn.Module):
         self.linear_size = nn.Linear(num_features, 1)
         self.linear_size.bias.data.fill_(0.5)
         if enable_uncertainty:
-            self.scales = NLL.FeaturesAsTriangularScale(num_features, 3)
+            self.scales = NLL.FeaturesAsDiagonalScale(num_features, 3, init_values=0.5)
 
     def forward(self, x: Tensor):
         coord = torch.cat([self.linear_xy(x), smoothclip0(self.linear_size(x))], dim=-1)
@@ -217,30 +232,51 @@ class PositionSizeOutput(nn.Module):
 
 def create_pose_estimator_backbone(num_heads, config: str, args: Dict[str, Any]):
     if config == "mobilenetv1":
-        return MobileNet(input_channel=1, num_classes=None, **args)
+        return MobileNet(input_channel=1, num_classes=None, use_blurpool=args.pop("use_blurpool"))
     elif config == "resnet18":
-        return resnet18(**args)
+        return resnet18(use_blurpool=args.pop("use_blurpool", False))
+    elif config == "resnet34":
+        return resnet34(use_blurpool=args.pop("use_blurpool", False))
     elif config == "hybrid_vit":
         if args:
             print(f"WARNING: backbone arguments to {config} ignored: {args}")
         return HybridVitBackbone(num_heads=num_heads)
     elif config.startswith("efficientnet_"):
+        args.pop("use_blurpool", None)
         kind = config[len("efficientnet_") :]
         assert kind in "b0,b1,b2,b3,b4".split(",")
         return EfficientNetBackbone(kind=kind, input_channels=1, stochastic_depth_prob=0.1, **args)
+    elif config == "mobilenetv2":
+        if args.pop("use_blurpool", False):
+            print("Warning: Blurpool unsupported")
+        return MobileNetV2Backbone()
+    elif config == "mobilenetv3":
+        if args.pop("use_blurpool", False):
+            print("Warning: Blurpool unsupported")
+        return MobileNetV3Backbone()
+    elif config.startswith("regnet_"):
+        if args.pop("use_blurpool", False):
+            print("Warning: Blurpool unsupported")
+        variant = config[len("regnet_") :]
+        assert variant in "400mf,800mf,1_6gf".split(",")
+        return RegNetBackbone(variant=variant)
+    elif config == "convnext":
+        if args.pop("use_blurpool", False):
+            print("Warning: Blurpool unsupported")
+        return ConvNextBackbone()
     else:
-        assert f"Unsupported backbone {config}"
+        raise AssertionError(f"Unsupported backbone {config}")
 
 
 class TransformerNeck(nn.Module):
     def __init__(self, num_heads, args: Dict[str, Any]):
         super().__init__()
         self.num_heads = num_heads
-        assert not args, "Has no parameters"
 
-    def forward(self, features: Tensor) -> tuple[Tensor]:
+    def forward(self, features: Tensor) -> tuple[Tensor, ...]:
         B, N, C = features.shape
         assert N == self.num_heads
+        # TODO: dropout
         return features.unbind(dim=1)
 
 
@@ -248,11 +284,13 @@ class CnnNeck(nn.Module):
     def __init__(self, num_heads, args: Dict[str, Any]):
         super().__init__()
         self.num_heads = num_heads
-        self.dropout_prob = args.get("dropout_prob", 0.5)
+        self.dropout_prob = args.pop("dropout_prob", 0.5)
         self.dropout = nn.Dropout(self.dropout_prob) if self.dropout_prob > 0.0 else nn.Identity()
+        print("DROPOUT", self.dropout.p)
 
-    def forward(self, features: Tensor) -> tuple[Tensor]:
+    def forward(self, features: Tensor) -> tuple[Tensor, ...]:
         B, C = features.shape
+        features = self.dropout(features)
         return features[:, None, :].expand(-1, self.num_heads, -1).unbind(dim=1)
 
 
@@ -268,7 +306,9 @@ class NetworkWithPointHead(nn.Module):
         dropout_prob=None,  # For loading old models. Ignored because they all used 0.5.
         use_local_pose_offset=True,
         backbone_args=None,
-        enable_6drot=False,
+        input_resolution: int = 129,
+        enable_6drot=False,  # For old models
+        rotrepr: Literal["quat", "6d"] = "quat",
     ):
         super(NetworkWithPointHead, self).__init__()
 
@@ -280,29 +320,44 @@ class NetworkWithPointHead(nn.Module):
         self.config = config
         self.enable_uncertainty = enable_uncertainty
         self.use_local_pose_offset = use_local_pose_offset
-        self.enable_6drot = enable_6drot
+        self.rotrepr = "6d" if enable_6drot else rotrepr
+        if config == "convnext":
+            assert input_resolution == 128
+        else:
+            assert input_resolution in (129, 161), "Where the backbone size typically makes a jump"
+        self._input_resolution = input_resolution
         self._backbone_args = {} if (backbone_args is None) else backbone_args
-        self._input_resolution = (129,)
+        backbone_args = copy.deepcopy(self._backbone_args)
+        # Warning: backbone_args is consumed in the __init__ process
+        # but self._backbone_args must be preserved for providing the config settings.
         num_heads = 3 + (1 if enable_point_head else 0) + (1 if enable_face_detector else 0)
 
-        self.convnet = create_pose_estimator_backbone(num_heads, config, self._backbone_args)
+        self.convnet = create_pose_estimator_backbone(num_heads, config, backbone_args)
         num_features = self.convnet.num_features
 
         if config == "hybrid_vit":
-            self.neck = TransformerNeck(num_heads, self._backbone_args)
+            self.neck = TransformerNeck(num_heads, backbone_args)
         else:
-            self.neck = CnnNeck(num_heads, self._backbone_args)
+            self.neck = CnnNeck(num_heads, backbone_args)
 
-        self.boxnet = BoundingBox(num_features, enable_uncertainty)
+        assert (
+            not backbone_args
+        ), f"All backbone args should have been consumed but got {backbone_args}"
+
+        self.boxnet = BoundingBox(num_features, enable_uncertainty=enable_uncertainty)
         self.posnet = PositionSizeOutput(num_features, enable_uncertainty)
-        if self.enable_6drot:
+        if self.rotrepr == "6d":
             self.quatnet = RotRepr6dWithNormalization(num_features, enable_uncertainty)
         else:
             self.quatnet = DirectQuaternionWithNormalization(num_features, enable_uncertainty)
         self.local_pose_offset = LocalToGlobalCoordinateOffset(self.NUM_DATASET_CONSTANTS)
         self.local_pose_offset_kpts = LocalToGlobalCoordinateOffset(self.NUM_DATASET_CONSTANTS)
         if enable_point_head:
-            self.landmarks = Landmarks3dOutput(num_features, enable_uncertainty)
+            self.landmarks = Landmarks3dOutput(
+                num_features,
+                enable_points_uncertainty=enable_uncertainty,
+                enable_shape_uncertainty=enable_uncertainty,
+            )
         if enable_face_detector:
             self.face_detector = nn.Linear(num_features, 1, bias=True)
 
@@ -314,8 +369,14 @@ class NetworkWithPointHead(nn.Module):
             "enable_uncertainty": self.enable_uncertainty,
             "use_local_pose_offset": self.use_local_pose_offset,
             "backbone_args": self._backbone_args,
-            "enable_6drot": self.enable_6drot,
+            "enable_6drot": self.rotrepr == "6d",
+            "rotrepr": self.rotrepr,
+            "input_resolution": self._input_resolution,
         }
+
+    def compile(self, *args, **kwargs):
+        self.convnet.compile(*args, **kwargs)
+        self.neck.compile(*args, **kwargs)
 
     @property
     def input_resolutions(self) -> Tuple[int]:
@@ -344,35 +405,40 @@ class NetworkWithPointHead(nn.Module):
         zs: list[Tensor] = list(self.neck(x))
         del x
 
-        out: Dict[str, Tensor] = self.boxnet(zs.pop())
+        with torch.autocast(device_type="cuda", enabled=False):
+            zs = [z.float() for z in zs]
 
-        out.update(self.posnet(zs.pop()))
-        out.update(self.quatnet(zs.pop()))
+            out: Dict[str, Tensor] = self.boxnet(zs.pop())
 
-        if self.use_local_pose_offset:
-            out.update({"hidden_rot": out["rot"], "hidden_coord": out["coord"]})
-            rots, coords = self.local_pose_offset(
-                out.pop("rot"), out.pop("coord"), set_id=coord_convention_id
-            )
-            out.update({"rot": rots, "coord": coords})
+            out.update(self.posnet(zs.pop()))
+            out.update(self.quatnet(zs.pop()))
 
-        rots, coords = out["rot"], out["coord"]
-
-        if self.enable_point_head:
             if self.use_local_pose_offset:
-                rots, coords = self.local_pose_offset_kpts(
-                    out["hidden_rot"], out["hidden_coord"], set_id=coord_convention_id
+                out.update({"hidden_rot": out["rot"], "hidden_coord": out["coord"]})
+                rots, coords = self.local_pose_offset(
+                    out.pop("rot"), out.pop("coord"), set_id=coord_convention_id
                 )
-            out.update(self.landmarks(zs.pop(), rots, coords))
+                out.update({"rot": rots, "coord": coords})
 
-        if self.enable_face_detector:
-            hasface_logits = self.face_detector(zs.pop()).view(x.size(0))
-            out.update({"hasface_logits": hasface_logits, "hasface": torch.sigmoid(hasface_logits)})
+            rots, coords = out["rot"], out["coord"]
 
-        out.pop("hidden_rot", None)
-        out.pop("hidden_coord", None)
-        if not self.training:
-            out["pose"] = out["rot"].as_quat()
+            if self.enable_point_head:
+                if self.use_local_pose_offset:
+                    rots, coords = self.local_pose_offset_kpts(
+                        out["hidden_rot"], out["hidden_coord"], set_id=coord_convention_id
+                    )
+                out.update(self.landmarks(zs.pop(), rots, coords))
+
+            if self.enable_face_detector:
+                hasface_logits = self.face_detector(zs.pop()).view(x.size(0))
+                out.update(
+                    {"hasface_logits": hasface_logits, "hasface": torch.sigmoid(hasface_logits)}
+                )
+
+            out.pop("hidden_rot", None)
+            out.pop("hidden_coord", None)
+            if not self.training:
+                out["pose"] = out["rot"].as_quat()
         return out
 
     def prepare_finetune(self):

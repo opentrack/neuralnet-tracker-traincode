@@ -12,7 +12,6 @@ from matplotlib import pyplot
 import gc
 
 from trackertraincode.datasets.dshdf5pose import Hdf5PoseDataset
-from trackertraincode.neuralnets.torchquaternion import quat_average
 import trackertraincode.vis as vis
 import trackertraincode.datatransformation as dtr
 import trackertraincode.utils as utils
@@ -25,6 +24,9 @@ from trackertraincode.eval import load_pose_network, InferenceNetwork, Predictor
 from trackertraincode.datasets.dshdf5pose import create_pose_dataset, FieldCategory
 
 C = FieldCategory
+
+# TODO: No supid hack
+HAVE_PT3D_68 = False
 
 
 def setup_loader(args):
@@ -59,9 +61,30 @@ def fit_batch(net: InferenceNetwork, batch: List[Batch]):
         images,
         rois,
     )
-    out = {k: out[k] for k in "unnormalized_quat coord pt3d_68 shapeparam".split()}
+    output_keys = "unnormalized_quat coord" + ("pt3d_68 shapeparam" if HAVE_PT3D_68 else "")
+    out = {k: out[k] for k in output_keys.split()}
     out.update(index=indices)
     return out
+
+
+def quat_average(quats):
+    quats = np.asarray(quats)
+    # Ensemble size, number of samples, dimensionality
+    E, N, D = quats.shape
+    assert D == 4
+    # Sum over ensemble to get an idea of the largest axis on average.
+    # Then find the actual longest axis, i.e. i,j,k or w.
+    pivot_axes = np.argmax(np.sum(np.abs(quats), axis=0), axis=-1)
+    assert pivot_axes.shape == (N,)
+    mask = np.take_along_axis(quats, pivot_axes[None, :, None], axis=-1) < 0.0
+    mask = mask[..., 0]  # Skip quaternion dimension
+    quats[mask, :] *= -1
+    quats = np.average(quats, axis=0)
+    norms = np.linalg.norm(quats, axis=-1, keepdims=True)
+    if not np.all(norms > 0.5):
+        print("Oh oh either quat_average is bugged or rotations predictions differ wildly")
+    quats /= norms
+    return quats
 
 
 def test_quats_average():
@@ -123,8 +146,9 @@ def fitall(args):
 
     quats = quat_average(outputs_per_net.pop("unnormalized_quat"))
     coords = np.average(outputs_per_net.pop("coord"), axis=0)
-    pt3d_68 = np.average(outputs_per_net.pop("pt3d_68"), axis=0)
-    shapeparams = np.average(outputs_per_net.pop("shapeparam"), axis=0)
+    if HAVE_PT3D_68:
+        pt3d_68 = np.average(outputs_per_net.pop("pt3d_68"), axis=0)
+        shapeparams = np.average(outputs_per_net.pop("shapeparam"), axis=0)
 
     assert len(quats) == num_samples
 
@@ -136,24 +160,25 @@ def fitall(args):
         ds_coords = create_pose_dataset(
             g, C.xys, count=num_samples, data=coords, exists_ok=args.overwrite
         )
-        ds_pt3d_68 = create_pose_dataset(
-            g,
-            C.points,
-            name="pt3d_68",
-            count=num_samples,
-            shape_wo_batch_dim=(68, 3),
-            data=pt3d_68,
-            exists_ok=args.overwrite,
-        )
-        ds_shapeparams = create_pose_dataset(
-            g,
-            C.general,
-            name="shapeparams",
-            count=num_samples,
-            shape_wo_batch_dim=(50,),
-            data=shapeparams,
-            exists_ok=args.overwrite,
-        )
+        if HAVE_PT3D_68:
+            ds_pt3d_68 = create_pose_dataset(
+                g,
+                C.points,
+                name="pt3d_68",
+                count=num_samples,
+                shape_wo_batch_dim=(68, 3),
+                data=pt3d_68,
+                exists_ok=args.overwrite,
+            )
+            ds_shapeparams = create_pose_dataset(
+                g,
+                C.general,
+                name="shapeparams",
+                count=num_samples,
+                shape_wo_batch_dim=(50,),
+                data=shapeparams,
+                exists_ok=args.overwrite,
+            )
 
 
 if __name__ == "__main__":

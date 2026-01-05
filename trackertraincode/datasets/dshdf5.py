@@ -334,3 +334,9 @@ class TorchHdf5DatasetBase(Dataset):
             self._h5file.close()
             self._h5file = None
             self._names_datasets = None
+
+    def get_data_channel(self, name):
+        self._ensure_h5opened()
+        ds = self._names_datasets[name]
+        assert isinstance(ds, h5py.Dataset), "Only h5py Dataset is supported"
+        return torch.as_tensor(ds[...])

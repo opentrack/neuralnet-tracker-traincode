@@ -120,13 +120,13 @@ class ReadSample:
         human_head_radius_micron = 100.0e3
         proj_radius = 0.5 * scale / 224.0 * w * human_head_radius_micron
         coord = [tx, ty, proj_radius]
-
         coord = move_aflw_head_center_to_between_eyes(coord, rot)
+        coord = coord.astype(np.float32)
         tx, ty, proj_radius = coord
 
         if self._load_face_params:
             f_shp, f_exp = get_3ddfa_shape_parameters(data)
-            shapeparam = np.concatenate([f_shp, f_exp])
+            shapeparam = np.concatenate([f_shp, f_exp]).astype(np.float32)
         else:
             shapeparam = None
             f_shp, f_exp = None, None
@@ -158,7 +158,7 @@ class ReadSample:
             assert shapeparam is not None
             vertices = self._headmodel(
                 torch.from_numpy(coord),
-                QuatRepr(value=torch.from_numpy(rot.as_quat())),
+                QuatRepr(value=torch.from_numpy(rot.as_quat().astype(np.float32))),
                 torch.from_numpy(shapeparam),
             ).numpy()
             x0, y0, _ = np.amin(vertices, axis=0)

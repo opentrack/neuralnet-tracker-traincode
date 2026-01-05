@@ -1,6 +1,9 @@
+import pytest
 import torch
+import numpy as np
+from scipy.spatial.transform import Rotation
 
-from trackertraincode.neuralnets.math import affinevecmul, random_choice
+from trackertraincode.neuralnets.math import affinevecmul, random_choice, rotvec_to_matrix
 from trackertraincode.neuralnets.affine2d import Affine2d, roi_normalizing_transform
 
 
@@ -97,3 +100,28 @@ def test_random_choice():
     assert x.shape == (5,)
     x = random_choice((3, 3), vals, weights, True)
     assert x.shape == (3, 3)
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_rotvec_to_matrix(compiled: bool):
+    """Test rotvec_to_matrix."""
+
+    np.random.seed(42)
+
+    # Generate batch of random rotation vectors with angles up to 2π
+    rotvec_batch_np = np.random.randn(32, 3) * (2 * np.pi)
+    rotvec_batch_torch = torch.from_numpy(rotvec_batch_np).float()
+
+    if compiled:
+        tested_rotvec_to_matrix = torch.compile(rotvec_to_matrix, fullgraph=True)
+    else:
+        tested_rotvec_to_matrix = rotvec_to_matrix
+    matrices_ours = tested_rotvec_to_matrix(rotvec_batch_torch).numpy()
+
+    matrices_scipy = Rotation.from_rotvec(rotvec_batch_np).as_matrix()
+
+    np.testing.assert_allclose(matrices_ours, matrices_scipy, atol=1e-5)
+
+    # Test zero rotation (identity)
+    matrix_zero = tested_rotvec_to_matrix(torch.zeros(1, 3)).numpy()
+    np.testing.assert_allclose(matrix_zero, np.eye(3)[None, :, :], atol=1e-6)

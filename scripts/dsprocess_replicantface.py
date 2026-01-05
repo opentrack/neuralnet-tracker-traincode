@@ -26,11 +26,19 @@ COLOR_CLOTHES = (135, 198, 199)
 COLOR_BG = (0, 0, 0)
 
 
-def map_indices(full_head_points, subset_indices):
+def map_indices(full_head_points, subset_indices, strict=True):
     m = np.full(np.amax(full_head_points) + 1, fill_value=-1, dtype=np.int64)
     m[full_head_points] = np.arange(len(full_head_points))
     new_subset_indices = m[subset_indices]
-    assert np.all(new_subset_indices >= 0)
+    if strict:
+        assert np.all(
+            new_subset_indices >= 0
+        ), f"Bad points (original): {subset_indices[new_subset_indices < 0]}"
+    else:
+        # The current set of head vertices is almost certainly incorrect. Some vertices appear to be
+        # missing. It doesn't matter for the bounding box, as it's only a dozen or so. So we just
+        # ignore them.
+        new_subset_indices = new_subset_indices[new_subset_indices >= 0]
     return new_subset_indices
 
 
@@ -42,12 +50,12 @@ def get_landmark_indices(dataset_root: Path):
     with closing(np.load(dataset_root / "landmark_indices.npz")) as f:
         # Landmarks roughly matching the 68 points scheme from 300W-LP and others.
         landmark_indices = f["indices"]
-    with closing(np.load(dataset_root / "face_indices.npz")) as f:
+    with closing(np.load(dataset_root / "face_indices-v2.npz")) as f:
         # Only the face area. Dense vertices. Used for creating the bounding box.
         face_indices = f["indices"]
     # Map landmark indices to reduced set of head vertices.
     new_landmark_indices = map_indices(head_indices, landmark_indices)
-    new_face_indices = map_indices(head_indices, face_indices)
+    new_face_indices = map_indices(head_indices, face_indices, strict=False)
     return new_landmark_indices, new_face_indices
 
 

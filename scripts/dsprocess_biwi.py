@@ -19,11 +19,13 @@ from collections import defaultdict
 from zipfile import ZipFile
 from typing import Tuple, Sequence, Any, Optional, Dict
 from numpy.typing import NDArray
+import random
 
 from facenet_pytorch import MTCNN
 
 from trackertraincode.datasets.preprocessing import imdecode, imencode, extract_image_roi
 from trackertraincode.datasets.dshdf5pose import create_pose_dataset, FieldCategory
+from trackertraincode.utils import copy_attributes, replace_ext
 
 from dsprocess_lapa import improve_roi_with_face_detector
 from filter_dataset import filter_file_by_frames
@@ -293,6 +295,26 @@ def generate_hdf5_dataset(
             f.create_dataset("sequence_starts", data=sequence_starts)
 
 
+def make_biwi_snippets(original_f, output_f):
+    random.seed(42)
+    seq_starts = original_f["sequence_starts"][...]
+    target_len = 60  # 1 sec?
+    sections = []
+    for a, b in zip(seq_starts[:-1], seq_starts[1:]):
+        assert b - a > target_len
+        new_start = random.randint(a, b - target_len)
+        new_end = new_start + target_len
+        sections.append((new_start, new_end))
+    selection = np.concatenate([np.arange(a, b) for a, b in sections])
+    for name, item in original_f.items():
+        print(f"Processing {name} ({type(item).__name__})")
+        if isinstance(item, h5py.Dataset) and name != "sequence_starts":
+            out_ds = output_f.create_dataset(name, data=item[...][selection], dtype=item.dtype)
+            copy_attributes(item, out_ds)
+    new_seq_starts = np.cumsum([0] + [(b - a) for a, b in sections])
+    output_f.create_dataset("sequence_starts", data=new_seq_starts)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Convert dataset")
     parser.add_argument("source", help="source file", type=str)
@@ -308,3 +330,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     dst = args.destination if args.destination else splitext(args.source)[0] + ".h5"
     generate_hdf5_dataset(args.source, dst, args.opal_annotation, args.count)
+    dst_snippets = replace_ext(dst, "-snippets.h5")
+    with h5py.File(dst, "r") as f, h5py.File(dst_snippets, "w") as fout:
+        make_biwi_snippets(f, fout)

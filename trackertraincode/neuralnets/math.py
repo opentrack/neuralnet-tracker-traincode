@@ -37,8 +37,7 @@ def smoothclip0(x, inplace: bool = False) -> torch.Tensor:
     return y
 
 
-@torch.jit.script
-def inv_smoothclip0(x: torch.Tensor) -> torch.Tensor:
+def inv_smoothclip0(x: torch.Tensor | float) -> torch.Tensor:
     x = torch.as_tensor(x)
     z = torch.atleast_1d(x)
     mask = z > 1.0
@@ -61,3 +60,43 @@ def inv_sqrclip0(y: torch.Tensor, beta: float):
 
 def chain_gmm(*matrices: List[torch.Tensor]) -> torch.Tensor:
     return functools.reduce(torch.matmul, matrices)
+
+
+def rotvec_to_matrix(rotvec: torch.Tensor) -> torch.Tensor:
+    # R = I + (sin a)K + (1-cos a)KK
+    # K = K' / a
+    # => R = I + (sin a)/a K' + (1-cos a)/aa K'K'
+    # => R = I + sinc (a) K' + 2/4 sinc(a/2)^2 K'K'
+
+    shape = rotvec.shape
+    device, dtype = rotvec.device, rotvec.dtype
+
+    # Compute angle magnitude: a = ||rotvec||
+    angles = torch.norm(rotvec, p=2, dim=-1)
+
+    # Extract components for skew-symmetric matrix
+    rx, ry, rz = rotvec.unbind(-1)
+    zeros = rx.new_zeros(rx.shape)
+
+    # Create skew-symmetric matrix K' (cross product matrix)
+    cross_product_matrix = torch.stack(
+        [zeros, -rz, ry, rz, zeros, -rx, -ry, rx, zeros], dim=-1
+    ).view(shape + (3,))
+
+    cross_product_matrix_sqrd = cross_product_matrix @ cross_product_matrix
+
+    identity = torch.eye(3, dtype=dtype, device=device)
+
+    # Compute sinc terms
+    # Second term: sinc(a) = sin(a)/a = torch.sinc(a/π)
+    sinc_a = torch.sinc(angles / torch.pi)[..., None, None]
+
+    # Third term: (1/2) * sinc²(a/2) = (1/2) * [sin(a/2)/(a/2)]²
+    sinc_a_half = torch.sinc(angles / (2.0 * torch.pi))[..., None, None]
+
+    # Combine: R = I + sinc(a) K' + (1/2) sinc²(a/2) K'K'
+    return (
+        identity.expand_as(cross_product_matrix)
+        + sinc_a * cross_product_matrix
+        + (0.5 * sinc_a_half**2) * cross_product_matrix_sqrd
+    )

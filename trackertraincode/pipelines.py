@@ -74,6 +74,16 @@ def make_biwi_datasest(transform=None):
     return Hdf5PoseDataset(filename, transform=transform, dataclass=Tag.ONLY_POSE)
 
 
+def make_biwi_snippets_datasest(transform=None):
+    filename = join(os.environ["DATADIR"], "biwi-v3-snippets.h5")
+    return Hdf5PoseDataset(filename, transform=transform, dataclass=Tag.ONLY_POSE)
+
+
+def make_biwi_snippets_datasest(transform=None):
+    filename = join(os.environ["DATADIR"], "biwi-v3-snippets.h5")
+    return Hdf5PoseDataset(filename, transform=transform, dataclass=Tag.ONLY_POSE)
+
+
 def make_300vw_dataset(transform=None):
     filename = join(os.environ["DATADIR"], "300vw.h5")
     return Hdf5PoseDataset(filename, transform=transform, dataclass=Tag.ONLY_LANDMARKS_2D)
@@ -127,24 +137,39 @@ def make_widerface_datasets(transform=None):
     return ds_widerface_train, ds_widerface_test
 
 
-def make_panoptic_datasets(transform=None):
+def make_panoptic_trainset(transform=None, remove_large_poses: bool = False):
+    if remove_large_poses:
+        filename = join(os.environ["DATADIR"], "panoptic-v2-front-faces-train.h5")
+    else:
+        filename = join(os.environ["DATADIR"], "panoptic-v2.h5")
     ds = Hdf5PoseDataset(
-        join(os.environ["DATADIR"], "panoptic-v2.h5"),
+        filename,
         transform=transform,
         dataclass=Tag.ONLY_POSE,
         coord_convention_id=1,
     )
-    test_indices = np.random.RandomState(seed=1234567).choice(len(ds), 1024, replace=False)
-    train_indices = np.setdiff1d(np.arange(len(ds)), test_indices)
-    ds_train = Subset(ds, train_indices)
-    ds_test = Subset(ds, test_indices)
-    return ds_train, ds_test
+    return ds
+
+
+def make_panoptic_trainset_small_poses(transform=None):
+    return make_panoptic_trainset(transform=transform, remove_large_poses=True)
+
+
+def make_panoptic_testset_small_poses(transform=None):
+    filename = join(os.environ["DATADIR"], "panoptic-v2-front-faces-test.h5")
+    ds = Hdf5PoseDataset(
+        filename,
+        transform=transform,
+        dataclass=Tag.ONLY_POSE,
+        coord_convention_id=1,
+    )
+    return ds
 
 
 def make_replicant_face_datasets(transform=None):
     """Custom dataset like face synthetics dataset but with pose annotations."""
     train = Hdf5PoseDataset(
-        join(os.environ["DATADIR"], "replicant-face-v4-wider-100k.h5"),
+        join(os.environ["DATADIR"], "replicant-face-v4-wider-100k-fixbb.h5"),
         transform=transform,
         dataclass=Tag.POSE_WITH_LMKS_NO_SHAPE_PARAMS,
     )
@@ -163,10 +188,6 @@ def make_replicant_face_stability_test(transform=None):
         transform=transform,
         dataclass=Tag.POSE_WITH_LMKS_NO_SHAPE_PARAMS,
     )
-
-
-def make_panoptic_trainset(transform=None):
-    return make_panoptic_datasets(transform)[0]
 
 
 def indices_without_extreme_poses(filename):
@@ -334,9 +355,7 @@ def _make_roi_augmentations(inputsize: int, stage: str, mode: str, rotation_aug_
     extension_factor = {"original": 1.1, "extent_to_forehead": 1.1, "landmarks": 1.2}[mode]
     cropping_aug = {
         "eval": dtr.batch.FocusRoi(inputsize, extension_factor),
-        "train": dtr.batch.RandomFocusRoi(
-            inputsize, rotation_aug_angle=rotation_aug_angle, extension_factor=extension_factor
-        ),
+        "train": dtr.batch.RandomFocusRoi(inputsize, rotation_aug_angle, extension_factor),
     }[stage]
 
     if mode == "original":
@@ -352,7 +371,7 @@ def _make_roi_augmentations(inputsize: int, stage: str, mode: str, rotation_aug_
         return [
             dtr.batch.PutRoiFromLandmarks(extend_to_forehead=True),
             cropping_aug,
-            # Forgot to regenerate the bounding box
+            dtr.batch.PutRoiFromLandmarks(extend_to_forehead=True),
         ]
 
 
@@ -407,10 +426,10 @@ def make_pose_estimation_loaders(
         # 20 samples with sufficiently  small correlation.
         (Id._300VW, make_300vw_dataset, 5000.0),
         (Id.LAPA, make_lapa_dataset, 20000.0),
-        (Id.WFLW_LP, make_wflw_lp_dataset, 40000.0),
+        (Id.WFLW_LP, make_wflw_lp_dataset, 30000.0),
         # There are over 70k frames in the latter but the labels are a bit shitty so I don't weight it as high.
-        (Id.LAPA_MEGAFACE_LP, make_lapa_megaface_lp_dataset, 10000.0),
-        (Id.PANOPTIC_CMU, make_panoptic_trainset, 20_000.0),
+        (Id.LAPA_MEGAFACE_LP, make_lapa_megaface_lp_dataset, 30000.0),
+        (Id.PANOPTIC_CMU, make_panoptic_trainset_small_poses, 30_000.0),
     ]:
         if id not in datasets:
             continue
@@ -420,8 +439,8 @@ def make_pose_estimation_loaders(
         ds_with_sizes.append((id, len(train)))
 
     for id, ds_ctor, default_sample_weight in [
-        (Id.WFLW_RELABEL, make_wflw_relabeled_datasets, 10000.0),
-        (Id.REPLICANT_FACE, make_replicant_face_datasets, 10_000.0),
+        (Id.WFLW_RELABEL, make_wflw_relabeled_datasets, 10_000.0),
+        (Id.REPLICANT_FACE, make_replicant_face_datasets, 30_000.0),
     ]:
         if id not in datasets:
             continue
@@ -536,7 +555,7 @@ def make_pose_estimation_loaders(
         batch_size=batchsize,
         sampler=train_sampler,
         num_workers=utils.num_workers(),
-        postprocess=transforms.Compose(loader_trafo_train),
+        postprocess=loader_trafo_train,
         segmentation_key_getter=lambda b: b.meta.tag,
         worker_init_fn=seed_worker,
         pin_memory=True,
@@ -581,6 +600,8 @@ def make_validation_dataset(
         ds = make_myselfyaw_dataset(transform=test_trafo)
     elif name == "biwi":
         ds = make_biwi_datasest(transform=test_trafo)
+    elif name == "biwi-snippets":
+        ds = make_biwi_snippets_datasest(transform=test_trafo)
     elif name == "repro_300_wlp":
         ds = make_repro_300wlp_dataset(transform=test_trafo)
     elif name == "wflw_lp":
@@ -588,7 +609,7 @@ def make_validation_dataset(
     elif name == "lapa_megaface_lp":
         ds = make_lapa_megaface_lp_dataset(transform=test_trafo)
     elif name == "panoptic":
-        ds = make_panoptic_datasets(transform=test_trafo)[1]
+        ds = make_panoptic_testset_small_poses(transform=test_trafo)
     elif name == "replicantface-train":
         ds, _ = make_replicant_face_datasets(transform=test_trafo)
         rng = np.random.default_rng(seed=42)
@@ -626,6 +647,7 @@ def make_validation_loader(
     elif additional_batch_transform:
         return dtr.PostprocessingLoader[Batch](
             ds,
+            batch_size=128,
             num_workers=num_workers,
             postprocess=additional_batch_transform,
             collate_fn=Batch.collate,

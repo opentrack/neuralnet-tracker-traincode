@@ -64,7 +64,9 @@ def filter_file_by_frames(f: h5py.File, fout, *, good_frame_indices=None, bad_fr
     indices = _prepare_good_indices(frame_count, good_frame_indices, bad_frame_indices)
     for name, ds in f.items():
         if ds.shape[0] == frame_count:
-            new_ds = fout.create_dataset(name, data=ds[indices, ...])
+            print(f"Copying {len(indices)} items from {name}")
+            # Read everything into memory. Otherwise its super duper slow.
+            new_ds = fout.create_dataset(name, data=ds[...][indices, ...])
             copy_attributes(ds, new_ds)
         else:
             assert False

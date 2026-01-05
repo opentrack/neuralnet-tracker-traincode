@@ -1,4 +1,5 @@
-from typing import Callable, Generator, Any, Generic, TypeVar
+from collections.abc import Sequence
+from typing import Callable, Generator, Any, Generic, TypeVar, cast
 from torch.utils.data import Dataset, DataLoader
 
 from trackertraincode.datasets.batch import Batch
@@ -32,7 +33,7 @@ class SegmentedCollationDataLoader:
         pin_memory: bool,
         sampler=None,
         worker_init_fn=None,
-        postprocess: Callable[[Batch], Batch] = lambda x: x,
+        postprocess: Sequence[Callable[[Batch], Batch] | Callable[[list[Batch]], list[Batch]]] = [],
     ):
         self._loader = DataLoader(
             dataset=dataset,
@@ -46,9 +47,20 @@ class SegmentedCollationDataLoader:
         self._postprocess = postprocess
 
     def __iter__(self) -> Generator[list[Batch], Any, None]:
-        for items in self._loader:
-            assert isinstance(items, list)
-            yield [self._postprocess(item) for item in items]
+        for batches in self._loader:
+            assert isinstance(batches, list)
+            batches = cast(list[Batch], batches)
+            yield self._run_postprocess(batches)
+
+    def _run_postprocess(self, batches: list[Batch]) -> list[Batch]:
+        for postprocess in self._postprocess:
+            if getattr(postprocess, "ingest_batch_list", False):
+                tmp = postprocess(batches)  # type: ignore
+                assert isinstance(tmp, list)
+                batches = tmp
+            else:
+                batches = [postprocess(item) for item in batches]  # type: ignore
+        return batches
 
     def iter_unrolled(self) -> Generator[Batch, Any, None]:
         for items in self:
