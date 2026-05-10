@@ -232,7 +232,9 @@ class PositionSizeOutput(nn.Module):
 
 def create_pose_estimator_backbone(num_heads, config: str, args: Dict[str, Any]):
     if config == "mobilenetv1":
-        return MobileNet(input_channel=1, num_classes=None, use_blurpool=args.pop("use_blurpool"))
+        return MobileNet(
+            input_channel=1, num_classes=None, use_blurpool=args.pop("use_blurpool", False)
+        )
     elif config == "resnet18":
         return resnet18(use_blurpool=args.pop("use_blurpool", False))
     elif config == "resnet34":

@@ -88,7 +88,10 @@ def onnx_export_and_inference_speed(net, device: Literal["cpu", "cuda"]):
 def test_pose_network_sanity(tmp_path):
     torch.set_num_threads(1)
     net = trackertraincode.neuralnets.models.NetworkWithPointHead(
-        config="resnet18", enable_uncertainty=True, input_resolution=129
+        config="mobilenetv1",
+        enable_uncertainty=True,
+        input_resolution=129,
+        backbone_args={"use_blurpool": True},
     )
     net.eval()
     print("==== Pose Net ====")

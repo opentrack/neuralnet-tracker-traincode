@@ -95,7 +95,7 @@ class DepthWiseBlock(nn.Module):
 class MobileNet(nn.Module):
     def __init__(
         self,
-        num_classes=1000,
+        num_classes: int | None = 1000,
         widen_factor=1.0,
         input_channel=1,
         momentum=0.1,
@@ -119,13 +119,32 @@ class MobileNet(nn.Module):
                 use_blurpool=use_blurpool,
             )
 
-        self.conv1 = nn.Conv2d(
-            input_channel, int(32 * widen_factor), kernel_size=5, stride=2, padding=2, bias=False
-        )
-        self.bn1 = NormalizationLayer(int(32 * widen_factor), momentum=momentum)
+        if not use_blurpool:
+            channels = 32
+            self.conv1 = nn.Conv2d(
+                input_channel,
+                int(channels * widen_factor),
+                kernel_size=5,
+                stride=2,
+                padding=2,
+                bias=False,
+            )
+        else:
+            channels = 24
+            conv = nn.Conv2d(
+                input_channel,
+                int(channels * widen_factor),
+                kernel_size=5,
+                stride=1,
+                padding=1,
+                bias=False,
+            )
+            bp = BlurPool2D(kernel_size=3, stride=2, channels=int(channels * widen_factor))
+            self.conv1 = nn.Sequential(conv, bp)
+        self.bn1 = NormalizationLayer(int(channels * widen_factor), momentum=momentum)
         self.relu = ActivationFunc(inplace=True)
 
-        self.dw2_1 = block(32, 64)
+        self.dw2_1 = block(channels, 64)
         self.dw2_2 = block(64, 128, stride=2)
         self.dw3_1 = block(128, 128)
         self.dw3_2 = block(128, 256, stride=2)
