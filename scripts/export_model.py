@@ -151,6 +151,8 @@ class ModelForOpenTrack(nn.Module):
                 ("coord_scales", "pos_size_scales"),
                 ("pose_scales_tril", "rotaxis_scales_tril"),
             ]
+        if original.enable_face_detector:
+            self._output_name_map += [("hasface", "hasface")]
 
     @property
     def output_names(self):

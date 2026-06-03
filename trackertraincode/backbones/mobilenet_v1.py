@@ -19,13 +19,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch
 import dataclasses
+import numpy as np
 
 # In this paper "Making Convolutional Networks Shift-Invariant Again" from 2019 it was shown that it
 # can be beneficial to blur the feature map before downsampling. The idea is to filter high frequency
 # content in order to avoid aliasing artifacts. The output of such networks can be more stable w.r.t
 # shifts and even more accurate.
 # Hence we add those layers here.
-from trackertraincode.neuralnets.modelcomponents import BlurPool2D
+from trackertraincode.neuralnets.modelcomponents import BlurPool2D, UpChannelsSlicingDeterministic
 
 NormalizationLayer = nn.BatchNorm2d
 ActivationFunc = nn.ReLU
@@ -40,18 +41,17 @@ class DepthWiseBlock(nn.Module):
         super(DepthWiseBlock, self).__init__()
         assert stride in (1, 2)
         self.inplanes, self.planes = inplanes, planes = int(inplanes), int(planes)
+        self.extra_downsampling = nn.Identity()
         if stride == 2 and use_blurpool:
-            self.conv_dw = nn.Sequential(
-                BlurPool2D(kernel_size=3, stride=2, channels=inplanes),
-                nn.Conv2d(
-                    inplanes,
-                    inplanes,
-                    kernel_size=3,
-                    padding=1,
-                    stride=1,
-                    groups=inplanes,
-                    bias=False,
-                ),
+            self.extra_downsampling = BlurPool2D(kernel_size=3, stride=2, channels=inplanes)
+            self.conv_dw = nn.Conv2d(
+                inplanes,
+                inplanes,
+                kernel_size=3,
+                padding=1,
+                stride=1,
+                groups=inplanes,
+                bias=False,
             )
         else:
             self.conv_dw = nn.Conv2d(
@@ -67,15 +67,20 @@ class DepthWiseBlock(nn.Module):
         self.conv_sep = nn.Conv2d(inplanes, planes, kernel_size=1, stride=1, padding=0, bias=False)
         self.bn_sep = NormalizationLayer(planes, momentum=momentum)
         self.relu = nn.ReLU(inplace=True)
-        self.skip_connection = not (stride != 1 or inplanes != planes)
+        self.skip_connection = nn.Identity()
+        if inplanes != planes:
+            self.skip_connection = UpChannelsSlicingDeterministic(inplanes, planes)
+        nn.init.zeros_(self.bn_sep.weight)
+        nn.init.zeros_(self.bn_sep.bias)
+
         self.stochastic_depth = None
         if stochastic_depth:
             self.stochastic_depth = stochastic_depth
 
     def forward(self, x):
-        out = x
+        x = self.extra_downsampling(x)  # Maybe blurpool
 
-        out = self.conv_dw(out)
+        out = self.conv_dw(x)
         out = self.bn_dw(out)
         out = self.relu(out)
 
@@ -83,9 +88,9 @@ class DepthWiseBlock(nn.Module):
 
         out = self.bn_sep(out)
 
-        if self.skip_connection:
+        if self.skip_connection is not None:
             out = self.stochastic_depth(out) if self.stochastic_depth is not None else out
-            out = out + x
+            out = out + self.skip_connection(x)
 
         out = self.relu(out)
 
@@ -119,30 +124,19 @@ class MobileNet(nn.Module):
                 use_blurpool=use_blurpool,
             )
 
-        if not use_blurpool:
-            channels = 32
-            self.conv1 = nn.Conv2d(
-                input_channel,
-                int(channels * widen_factor),
-                kernel_size=5,
-                stride=2,
-                padding=2,
-                bias=False,
-            )
-        else:
-            channels = 24
-            conv = nn.Conv2d(
-                input_channel,
-                int(channels * widen_factor),
-                kernel_size=5,
-                stride=1,
-                padding=1,
-                bias=False,
-            )
-            bp = BlurPool2D(kernel_size=3, stride=2, channels=int(channels * widen_factor))
-            self.conv1 = nn.Sequential(conv, bp)
-        self.bn1 = NormalizationLayer(int(channels * widen_factor), momentum=momentum)
-        self.relu = ActivationFunc(inplace=True)
+        # This is the original mobilenetv1 style:
+        channels = 32
+        conv = nn.Conv2d(
+            input_channel,
+            int(32 * widen_factor),
+            kernel_size=5,
+            stride=2,
+            padding=2,
+            bias=False,
+        )
+        bn = NormalizationLayer(int(32 * widen_factor), momentum=momentum)
+        relu = ActivationFunc(inplace=True)
+        self.tail = nn.Sequential(conv, bn, relu)
 
         self.dw2_1 = block(channels, 64)
         self.dw2_2 = block(64, 128, stride=2)
@@ -177,10 +171,7 @@ class MobileNet(nn.Module):
                 m.weight.data.normal_(0, math.sqrt(2.0 / n))
 
     def forward(self, x):
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-
+        x = self.tail(x)
         out1 = x = self.dw2_1(x)
         x = self.dw2_2(x)
         out2 = x = self.dw3_1(x)

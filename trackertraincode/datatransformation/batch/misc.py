@@ -34,5 +34,8 @@ class PutRoiFromLandmarks(object):
         return roi
 
     def __call__(self, sample: Batch):
+        if "hasface" in sample:
+            # FIXME: They have no pose data. But this will fail if pose datasets ever get the hasface flag
+            return sample
         sample["roi"] = self._create_roi(sample)
         return sample

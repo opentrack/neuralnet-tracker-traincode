@@ -405,7 +405,7 @@ def main_closed_loop(paths: List[str], device, dataset: str = "biwi-snippets"):
     if dataset == "myself":
         gt = None
         bars = MYSELF_DATASET_BLINKS
-        if 0:
+        if 1:
             weights = np.full((len(loader.dataset),), fill_value=0.1, dtype=np.float32)
             for s in MYSELF_DATASET_IMPORTANT_SEGMENTS:
                 weights[s] = 1.0

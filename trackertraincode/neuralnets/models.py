@@ -244,24 +244,24 @@ def create_pose_estimator_backbone(num_heads, config: str, args: Dict[str, Any])
             print(f"WARNING: backbone arguments to {config} ignored: {args}")
         return HybridVitBackbone(num_heads=num_heads)
     elif config.startswith("efficientnet_"):
-        args.pop("use_blurpool", None)
         kind = config[len("efficientnet_") :]
         assert kind in "b0,b1,b2,b3,b4".split(",")
-        return EfficientNetBackbone(kind=kind, input_channels=1, stochastic_depth_prob=0.1, **args)
+        return EfficientNetBackbone(
+            kind=kind,
+            input_channels=1,
+            stochastic_depth_prob=0.05,
+            use_blurpool=args.pop("use_blurpool", False),
+        )
     elif config == "mobilenetv2":
-        if args.pop("use_blurpool", False):
-            print("Warning: Blurpool unsupported")
-        return MobileNetV2Backbone()
+        return MobileNetV2Backbone(use_blurpool=args.pop("use_blurpool", False))
     elif config == "mobilenetv3":
         if args.pop("use_blurpool", False):
             print("Warning: Blurpool unsupported")
         return MobileNetV3Backbone()
     elif config.startswith("regnet_"):
-        if args.pop("use_blurpool", False):
-            print("Warning: Blurpool unsupported")
         variant = config[len("regnet_") :]
-        assert variant in "400mf,800mf,1_6gf".split(",")
-        return RegNetBackbone(variant=variant)
+        assert variant in "400mf,800mf,1_6gf,x_400mf,x_800mf".split(",")
+        return RegNetBackbone(variant=variant, use_blurpool=args.pop("use_blurpool", False))
     elif config == "convnext":
         if args.pop("use_blurpool", False):
             print("Warning: Blurpool unsupported")
@@ -361,7 +361,9 @@ class NetworkWithPointHead(nn.Module):
                 enable_shape_uncertainty=enable_uncertainty,
             )
         if enable_face_detector:
-            self.face_detector = nn.Linear(num_features, 1, bias=True)
+            self.face_detector = nn.Sequential(
+                nn.Linear(num_features, 64), nn.ReLU(), nn.Linear(64, 1)
+            )
 
     def get_config(self):
         return {
@@ -432,7 +434,7 @@ class NetworkWithPointHead(nn.Module):
                 out.update(self.landmarks(zs.pop(), rots, coords))
 
             if self.enable_face_detector:
-                hasface_logits = self.face_detector(zs.pop()).view(x.size(0))
+                hasface_logits = self.face_detector(zs.pop().detach())
                 out.update(
                     {"hasface_logits": hasface_logits, "hasface": torch.sigmoid(hasface_logits)}
                 )

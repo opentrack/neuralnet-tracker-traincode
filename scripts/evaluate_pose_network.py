@@ -3,11 +3,14 @@
 
 # Seems to run a bit faster than with default settings and less bugged
 # See https://github.com/pytorch/pytorch/issues/67864
+from collections.abc import Sequence
+
+from sklearn import get_config
 import torch.multiprocessing
 
 torch.multiprocessing.set_sharing_strategy("file_system")
 
-from typing import Any, List, NamedTuple, Tuple, Dict, Callable, Literal
+from typing import Any, List, NamedTuple, Tuple, Dict, Callable, Literal, cast, Type, TypeAlias
 import numpy as np
 import argparse
 import tqdm
@@ -24,6 +27,7 @@ from torch import Tensor
 from collections import defaultdict
 from os.path import commonprefix, relpath
 import torchmetrics
+import pandas as pd
 
 from trackertraincode.datasets.batch import Batch, Metadata
 import trackertraincode.datatransformation as dtr
@@ -106,10 +110,131 @@ def interleaved(a, b):
     return c
 
 
-class TableBuilder:
+def make_model_path_headers(model_paths: List[str]) -> List[str]:
+    prefix = commonprefix(model_paths)
+    return [relpath(m, prefix) for m in model_paths]
+
+
+class PoseErrAverages(NamedTuple):
+    euler_angles: tuple[float, float, float]
+    geodesic: float
+    rmse_pos: float
+    rmse_size: float
+    unweighted_nme_3d: float | None
+    nme_2d: eval.KptNmeResults | None
+
+
+class PoseDetectionResults(NamedTuple):
+    size_errs: NDArray[Any]
+    geodesic_errs: NDArray[Any]
+    unweighted_nme_3d: NDArray[Any] | None
+    averages: PoseErrAverages
+
+    @staticmethod
+    def from_metrics_output(
+        results: dict[str, Tensor | eval.KptNmeResults],
+    ) -> "PoseDetectionResults":
+        poseerrs: NDArray[Any] = results["pose_errs"].cpu().numpy()
+        geodesic_errs: NDArray[Any] = results["geodesic_errs"].cpu().numpy()
+        eulererrs: NDArray[Any] = results["euler_errs"].cpu().numpy()
+        if "uw_nme_3d" in results and "nme_2d" in results:
+            uw_nme_3d = results["uw_nme_3d"].cpu().numpy()
+            nme_2d = results["nme_2d"]
+        else:
+            uw_nme_3d = nme_2d = None
+        assert isinstance(nme_2d, (eval.KptNmeResults, type(None)))
+        e_posx, e_posy, e_size = poseerrs.T
+        rmse_pos = np.sqrt(
+            np.average(np.sum(np.square(np.vstack([e_posx, e_posy]).T), axis=1), axis=0)
+        )
+        rmse_size = np.sqrt(np.average(np.square(e_size)))
+        averages = PoseErrAverages(
+            euler_angles=(np.average(np.abs(eulererrs), axis=0) * utils.rad2deg).tolist(),
+            geodesic=(np.average(geodesic_errs) * utils.rad2deg).tolist(),
+            rmse_pos=(rmse_pos * 100.0).tolist(),
+            rmse_size=(rmse_size * 100.0).tolist(),
+            unweighted_nme_3d=np.average(uw_nme_3d).tolist() if uw_nme_3d is not None else None,
+            nme_2d=nme_2d,
+        )
+        return PoseDetectionResults(
+            size_errs=e_size,
+            geodesic_errs=geodesic_errs,
+            unweighted_nme_3d=uw_nme_3d,
+            averages=averages,
+        )
+
+
+class BaseResultTableBuilder:
+    Row: TypeAlias = Sequence[str | float | int]
+
+    def __init__(self):
+        self._header: list[str] = []
+        self._non_averaged_rows: dict[str, list[BaseResultTableBuilder.Row]] = defaultdict(list)
+
+    @staticmethod
+    def _aggregate_col(col: pd.Series):
+        if col.dtype in (np.float32, np.float64, np.float16):
+            mean = col.mean()
+            std = col.std()
+            return f"{mean:0.2f} ± {std:0.2f}"
+        elif (col[0] == col).all():
+            return col[0]
+        else:
+            "???"
+
+    def build(self) -> str:
+        tables = []
+        for name, rows in self._non_averaged_rows.items():
+            t = pd.DataFrame(rows, columns=self._header)
+            if len(t.index) > 1:
+                # t = t.mean(axis=0, skipna=False, numeric_only=False)
+                t = t.aggregate(self._aggregate_col)
+                t = t.to_frame().T
+            tables.append(t)
+        table = cast(pd.DataFrame, pd.concat(tables, ignore_index=False))
+        table = table.set_index("Data")
+        return table.to_markdown(tablefmt="github", floatfmt=".2f")
+        # return tabulate.tabulate(self._entries, self._header, tablefmt="github", floatfmt=".2f")
+
+    def build_json_dict(self) -> dict[str, list[str | float | int]]:
+        raise NotImplementedError()
+        by_header = defaultdict(list)
+        for row in self._entries:
+            for name, value in zip(self._header, row):
+                by_header[name].append(value)
+        return by_header
+
+
+class FacedetResultTableBuilder(BaseResultTableBuilder):
+    def __init__(self):
+        super().__init__()
+        thresholds = eval.IsFaceAccuracy().thresholds.tolist()
+        self._header = ["Data"] + [f"acc@{t:.2f}" for t in thresholds]
+
+    def add_row(
+        self,
+        dataset: str,
+        results: eval.AccuracyResults,
+        data_aux_string: str | None,
+    ):
+        row_name: str = dataset + cast(str, data_aux_string if data_aux_string is not None else "")
+        self._non_averaged_rows[row_name].append([row_name] + results.accuracies.tolist())
+
+
+def report_facedetection(net_filename, builder: FacedetResultTableBuilder):
+    loader = trackertraincode.pipelines.make_validation_loader("wider", return_single_samples=True)
+    net = load_pose_network(net_filename, args.device)
+    predictor = eval.Predictor(net, 1.1)
+    metric = eval.IsFaceAccuracy()
+    results: eval.AccuracyResults = predictor.evaluate(metric, loader)
+    builder.add_row("wider", results, " / 1.1")
+
+
+class PoseResultTableBuilder(BaseResultTableBuilder):
     data_name_table = {"aflw2k3d": "AFLW 2k 3d", "aflw2k3d_grimaces": "grimaces"}
 
     def __init__(self):
+        super().__init__()
         # Position and size errors are measured relative to the ROI size. Hence in percent.
         self._header = [
             "Data",
@@ -126,68 +251,39 @@ class TableBuilder:
             "NME2d%_90",
             "NME2d%_avg",
         ]
-        self._entries_by_model = defaultdict(list)
 
     def add_row(
         self,
-        model: str,
-        data: str,
-        euler_angles: List[float],
-        geodesic: float,
-        rmse_pos: float,
-        rmse_size: float,
-        unweighted_nme_3d,
-        nme_2d,
-        data_aux_string=None,
+        dataset: str,
+        results: PoseErrAverages,
+        data_aux_string: str | None,
     ):
-        unweighted_nme_3d = unweighted_nme_3d * 100 if unweighted_nme_3d is not None else "n/a"
+        unweighted_nme_3d = (
+            results.unweighted_nme_3d * 100 if results.unweighted_nme_3d is not None else "n/a"
+        )
         nme_2d_30, nme_2d_60, nme_2d_90, nme_2d_avg = (
-            ["/na" for _ in range(4)] if nme_2d is None else [x * 100 for x in nme_2d]
+            ["n/a" for _ in range(4)]
+            if results.nme_2d is None
+            else [x * 100 for x in results.nme_2d]
         )
-        data = self.data_name_table.get(data, data) + (
-            data_aux_string if data_aux_string is not None else ""
+        row_name: str = self.data_name_table.get(dataset, dataset) + cast(
+            str, data_aux_string if data_aux_string is not None else ""
         )
-        self._entries_by_model[model] += [
-            [data]
-            + euler_angles
+        self._non_averaged_rows[row_name].append(
+            [row_name]
+            + list(results.euler_angles)
             + [
-                np.average(euler_angles).tolist(),
-                geodesic,
-                rmse_pos,
-                rmse_size,
+                cast(float, np.average(results.euler_angles).tolist()),
+                results.geodesic,
+                results.rmse_pos,
+                results.rmse_size,
                 unweighted_nme_3d,
                 nme_2d_30,
                 nme_2d_60,
                 nme_2d_90,
                 nme_2d_avg,
             ]
-        ]
-
-    def build(self) -> str:
-        prefix = commonprefix(list(self._entries_by_model.keys()))
-        nicer_model_paths = {m: relpath(m, prefix) for m in self._entries_by_model.keys()}
-        string_rows = []
-        for model, rows in self._entries_by_model.items():
-            string_rows += [nicer_model_paths[model]]
-            string_rows += tabulate.tabulate(
-                rows, self._header, tablefmt="github", floatfmt=".2f"
-            ).splitlines()
-        return "\n".join(string_rows)
-
-    def build_json(self) -> str:
-        prefix = commonprefix(list(map(os.path.dirname, self._entries_by_model.keys())))
-
-        def model_table(rows):
-            by_header = defaultdict(list)
-            for row in rows:
-                for name, value in zip(self._header, row):
-                    by_header[name].append(value)
-            return by_header
-
-        table = {
-            relpath(m, prefix): model_table(rows) for m, rows in self._entries_by_model.items()
-        }
-        return json.dumps(table, indent=2)
+        )
 
 
 def compute_pred_keys(loader: dtr.SampleBySampleLoader, net: eval.InferenceNetwork):
@@ -203,7 +299,11 @@ def compute_pred_keys(loader: dtr.SampleBySampleLoader, net: eval.InferenceNetwo
 
 
 def report(
-    net_filename, data_name, roi_config: RoiConfig, args: argparse.Namespace, builder: TableBuilder
+    net_filename,
+    data_name,
+    roi_config: RoiConfig,
+    args: argparse.Namespace,
+    builder: PoseResultTableBuilder,
 ):
     alignment: AlignmentScheme = args.alignment_scheme
 
@@ -236,35 +336,22 @@ def report(
             {"uw_nme_3d": eval.UnweightedKptNME(), "nme_2d": eval.KptNME(dimensions=2)}
         )
 
-    results: dict[str, Tensor] = predictor.evaluate(metrics, loader)
+    results: dict[str, Tensor | eval.KptNmeResults] = predictor.evaluate(metrics, loader)
 
-    poseerrs: NDArray[Any] = results["pose_errs"].cpu().numpy()
-    geodesic_errs: NDArray[Any] = results["geodesic_errs"].cpu().numpy()
-    eulererrs: NDArray[Any] = results["euler_errs"].cpu().numpy()
-    if "pt3d_68" in pred_keys:
-        uw_nme_3d = results["uw_nme_3d"].cpu().numpy()
-        nme_2d = results["nme_2d"]
-    else:
-        uw_nme_3d = nme_2d = None
-
-    e_posx, e_posy, e_size = poseerrs.T
-    rmse_pos = np.sqrt(np.average(np.sum(np.square(np.vstack([e_posx, e_posy]).T), axis=1), axis=0))
-    rmse_size = np.sqrt(np.average(np.square(e_size)))
+    pose_results_intermediate = PoseDetectionResults.from_metrics_output(results)
 
     builder.add_row(
-        model=net_filename,
-        data=data_name,
-        euler_angles=(np.average(np.abs(eulererrs), axis=0) * utils.rad2deg).tolist(),
-        geodesic=(np.average(geodesic_errs) * utils.rad2deg).tolist(),
-        rmse_pos=(rmse_pos * 100.0).tolist(),
-        rmse_size=(rmse_size * 100.0).tolist(),
+        dataset=data_name,
+        results=pose_results_intermediate.averages,
         data_aux_string=" / " + str(roi_config),
-        unweighted_nme_3d=np.average(uw_nme_3d) if uw_nme_3d is not None else None,
-        nme_2d=nme_2d,
     )
 
     if args.vis != "none":
-        quantity = {"kpts": uw_nme_3d, "rot": geodesic_errs, "size": e_size}[args.vis]
+        quantity = {
+            "kpts": pose_results_intermediate.unweighted_nme_3d,
+            "rot": pose_results_intermediate.geodesic_errs,
+            "size": pose_results_intermediate.size_errs,
+        }[args.vis]
         if quantity is None:
             print(f"Prediction for {args.vis} is not available.")
             return []
@@ -293,7 +380,9 @@ def report(
 
 def run(args):
     gui = []
-    table_builder = TableBuilder()
+
+    pose_table_builders = defaultdict(PoseResultTableBuilder)
+    facedet_table_builders = defaultdict(FacedetResultTableBuilder)
 
     if not args.comprehensive_roi:
         if args.roi_expansion is not None:
@@ -306,16 +395,35 @@ def run(args):
 
     datasets = args.ds.split("+")
     for net_filename in args.filenames:
+        if args.hasface:
+            builder = facedet_table_builders[net_filename]
+            report_facedetection(net_filename, builder)
         for name in datasets:
             for roi_config in roi_configs:
-                gui += report(net_filename, name, roi_config, args, table_builder)
-    if args.json:
-        assert args.json.endswith(".json")
-        print(f"writing {args.json}")
-        with open(args.json, "w") as f:
-            f.write(table_builder.build_json())
-    else:
-        print(table_builder.build())
+                builder = (
+                    pose_table_builders["average"]
+                    if args.aggregate
+                    else pose_table_builders[net_filename]
+                )
+                gui += report(net_filename, name, roi_config, args, builder)
+
+    net_names = dict(
+        zip(cast(Sequence[str], args.filenames), make_model_path_headers(args.filenames))
+    )
+
+    # if args.json:
+    #     assert args.json.endswith(".json")
+    #     print(f"writing {args.json}")
+    #     with open(args.json, "w") as f:
+    #         f.write(table_builder.build_json_dict())
+    # else:
+
+    builders = list(pose_table_builders.items()) + list(facedet_table_builders.items())
+
+    for net_filename, builder in builders:
+        print(f"## {net_names.get(net_filename, net_filename)}")
+        print(builder.build())
+
     pyplot.show()
     print("Viewed samples:")
     for thing in gui:
@@ -336,13 +444,15 @@ if __name__ == "__main__":
         default="none",
         choices=["none", "kpts", "rot", "size"],
     )
+    parser.add_argument("--hasface", action="store_true", default=False)
     parser.add_argument("--device", help="select device: cpu or cuda", default="cuda", type=str)
     parser.add_argument("--comprehensive-roi", action="store_true", default=False)
     parser.add_argument(
         "--alignment-scheme", choices=["perspective", "opal23", "none"], default="none"
     )
     parser.add_argument("--roi-expansion", default=None, type=float)
-    parser.add_argument("--json", type=str, default=None)
+    # parser.add_argument("--json", type=str, default=None)
+    parser.add_argument("--aggregate", action="store_true", default=False)
     parser.add_argument("--ds", type=str, default="aflw2k3d")
     args = parser.parse_args()
     run(args)

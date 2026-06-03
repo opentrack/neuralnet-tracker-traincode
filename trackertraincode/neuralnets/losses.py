@@ -226,8 +226,8 @@ class BoxLoss(nn.Module):
 class HasFaceLoss(object):
     def __call__(self, pred, sample):
         target = sample["hasface"]
-        logits = pred["hasface_logits"]
-        return F.binary_cross_entropy_with_logits(logits, target, reduction="none").mean(dim=-1)
+        logits = pred["hasface_logits"].squeeze(-1)
+        return F.binary_cross_entropy_with_logits(logits, target, reduction="none")
 
 
 ##########################################

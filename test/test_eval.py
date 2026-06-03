@@ -139,3 +139,45 @@ def test_make_look_at_matrix():
     assert np.abs(np.dot(m[:, 0], np.asarray([0.0, 1.0, 0.0]))) < 1.0e-6
     assert m[0, 0] > 0.1
     assert m[1, 1] > 0.1
+
+
+def test_pose_result_table_builder_prints_table():
+    # Load the script module to access PoseResultTableBuilder and PoseErrAverages
+    from pathlib import Path
+    import runpy
+
+    script_path = Path(__file__).parent.parent / "scripts" / "evaluate_pose_network.py"
+    mod = runpy.run_path(str(script_path))
+
+    PoseResultTableBuilder = mod["PoseResultTableBuilder"]
+    PoseErrAverages = mod["PoseErrAverages"]
+
+    builder = PoseResultTableBuilder()
+
+    # Add multiple rows for the same datasets to exercise aggregation
+    for i in range(3):
+        averages = PoseErrAverages(
+            euler_angles=(10.0 + i, 20.0 + i, 5.0 + i),
+            geodesic=15.0 + i,
+            rmse_pos=0.5 + 0.1 * i,
+            rmse_size=0.2 + 0.05 * i,
+            unweighted_nme_3d=None,
+            nme_2d=None,
+        )
+        builder.add_row("aflw2k3d", averages, None)
+
+    for i in range(2):
+        averages = PoseErrAverages(
+            euler_angles=(1.0 + i, 2.0 + i, 3.0 + i),
+            geodesic=2.0 + i,
+            rmse_pos=0.1 + 0.05 * i,
+            rmse_size=0.05 + 0.02 * i,
+            unweighted_nme_3d=None,
+            nme_2d=None,
+        )
+        builder.add_row("aflw2k3d_grimaces", averages, None)
+
+    table = builder.build()
+    # Print table for visual inspection
+    print()
+    print(table)

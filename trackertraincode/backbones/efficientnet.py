@@ -1,9 +1,11 @@
 from typing import List, NamedTuple
-import torchvision.models.resnet
 import torchvision.models.efficientnet
 from torch import nn
 import torch
 from functools import partial
+from torchvision.ops.misc import Conv2dNormActivation
+from trackertraincode.neuralnets.modelcomponents import BlurPool2D
+from trackertraincode.backbones.other_torchvision import _patch_downsampling_conv_norm_act
 
 
 class EfficientNetBackbone(nn.Module):
@@ -11,7 +13,15 @@ class EfficientNetBackbone(nn.Module):
     kind must be in (b0,b3,b4)
     """
 
-    def __init__(self, kind: str, input_channels, *args, return_only_featuremaps=False, **kwargs):
+    def __init__(
+        self,
+        kind: str,
+        input_channels,
+        *args,
+        return_only_featuremaps=False,
+        use_blurpool=False,
+        **kwargs,
+    ):
         super().__init__()
 
         Config = NamedTuple(
@@ -38,19 +48,26 @@ class EfficientNetBackbone(nn.Module):
 
         self.layers = net.features
 
-        if 0:
-            self.layers[0] = torchvision.models.efficientnet.Conv2dNormActivation(
-                input_channels,
-                40,
-                kernel_size=3,
-                stride=2,
-                norm_layer=nn.BatchNorm2d,
-                activation_layer=nn.SiLU,
-            )
-        else:
-            self.to_3chn_input = nn.Conv2d(input_channels, 3, 1)
-            self.to_3chn_input.bias.data.zero_()
-            self.to_3chn_input.weight.data.fill_(1.0)
+        # Patch input stage
+        tail = self.layers[0]
+        assert isinstance(tail, Conv2dNormActivation)
+        conv = tail[0]
+        assert isinstance(conv, nn.Conv2d)
+        assert conv.stride == (2, 2)
+        assert conv.kernel_size == (3, 3)
+        tail[0] = nn.Conv2d(
+            input_channels,
+            conv.out_channels,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            bias=conv.bias is not None,
+        )
+        if use_blurpool:
+            tail.insert(1, BlurPool2D(kernel_size=3, stride=2, channels=conv.out_channels))
+
+        if use_blurpool:
+            _patch_downsampling_conv_norm_act(self.layers)
 
         def grab_output(dest: dict, name: str, model, input, output):
             dest[name] = output
@@ -64,7 +81,6 @@ class EfficientNetBackbone(nn.Module):
         self.layers[7].register_forward_hook(partial(grab_output, self.dest, "z5"))
 
     def forward(self, x):
-        x = self.to_3chn_input(x)
         y = self.layers(x)
         z = [self.dest[k] for k in "z65 z33 z17 z9 z5".split(" ")]
         self.dest.clear()

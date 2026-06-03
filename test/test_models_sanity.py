@@ -88,7 +88,7 @@ def onnx_export_and_inference_speed(net, device: Literal["cpu", "cuda"]):
 def test_pose_network_sanity(tmp_path):
     torch.set_num_threads(1)
     net = trackertraincode.neuralnets.models.NetworkWithPointHead(
-        config="mobilenetv1",
+        config="resnet18",
         enable_uncertainty=True,
         input_resolution=129,
         backbone_args={"use_blurpool": True},
@@ -103,7 +103,7 @@ def test_pose_network_sanity(tmp_path):
     print("-------------")
     compile_compat(net, torch.rand(1, 1, net.input_resolution, net.input_resolution))
 
-    filename = tmp_path / "model.onnx"
+    filename = tmp_path / "model.ckpt"
     trackertraincode.neuralnets.models.save_model(net, filename)
     trackertraincode.neuralnets.models.load_model(filename)
 

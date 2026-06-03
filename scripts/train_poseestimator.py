@@ -281,6 +281,7 @@ def setup_losses(args: MyArgs, net):
             cregularize += [
                 C("nll_shp_gmm", losses.ShapePlausibilityLoss().cuda(), 0.1),
             ]
+        has_face_loss = C("hasface", losses.HasFaceLoss(), 0.001)
 
     train_criterions = {
         Tag.ONLY_POSE: train.CriterionGroup(poselosses + cregularize + roilosses),
@@ -295,11 +296,13 @@ def setup_losses(args: MyArgs, net):
         ),
         Tag.ONLY_LANDMARKS: train.CriterionGroup(pointlosses + cregularize),
         Tag.ONLY_LANDMARKS_25D: train.CriterionGroup(pointlosses25d + cregularize),
+        Tag.FACE_DETECTION: has_face_loss,
     }
     test_criterions = {
         Tag.POSE_WITH_LANDMARKS: train.CriterionGroup(
             poselosses + pointlosses + roilosses + shapeparamloss + cregularize
         ),
+        Tag.FACE_DETECTION: has_face_loss,
     }
 
     return train_criterions, test_criterions
@@ -353,13 +356,16 @@ class LitModel(pl.LightningModule):
         )
         return {"loss": loss_sum, "mt_losses": loss_val_by_name}
 
-    def validation_step(self, batch: Batch, batch_idx: int) -> torch.Tensor | dict[str, Any] | None:
-        images = batch["image"]
-        pred = self._model(images)
-        values = self._test_criterions[batch.meta.tag].evaluate(pred, batch, batch_idx)
-        val_loss = torch.cat([(lv.val * lv.weight) for lv in values]).sum()
-        self.log("val_loss", val_loss, on_epoch=True, batch_size=batch.meta.batchsize)
-        return values
+    def validation_step(
+        self, batches: list[Batch], batch_idx: int
+    ) -> torch.Tensor | dict[str, Any] | None:
+        for batch in batches:
+            images = batch["image"]
+            pred = self._model(images)
+            values = self._test_criterions[batch.meta.tag].evaluate(pred, batch, batch_idx)
+            val_loss = torch.cat([(lv.val * lv.weight) for lv in values]).sum()
+            self.log("val_loss", val_loss, on_epoch=True, batch_size=batch.meta.batchsize)
+            return values
 
     def configure_optimizers(self):
         optimizer, scheduler = create_optimizer(self._model, self._args)

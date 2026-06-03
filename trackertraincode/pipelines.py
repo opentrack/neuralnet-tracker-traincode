@@ -132,8 +132,8 @@ def make_widerface_datasets(transform=None):
     ds_widerface = Hdf5PoseDataset(
         widerfacefilename, transform=transform, dataclass=Tag.FACE_DETECTION
     )
-    ds_widerface_train = Subset(ds_widerface, np.arange(500, len(ds_widerface)))
-    ds_widerface_test = Subset(ds_widerface, np.arange(500))
+    ds_widerface_train = Subset(ds_widerface, np.arange(1000, len(ds_widerface)))
+    ds_widerface_test = Subset(ds_widerface, np.arange(1000))
     return ds_widerface_train, ds_widerface_test
 
 
@@ -481,7 +481,7 @@ def make_pose_estimation_loaders(
         test = dtr.TransformedDataset(test, C(headpose_test_trafo))
         train_sets.append(train)
         test_sets.append(test)
-        train_sets_weight_list.append(dataset_weights.get(id, 10_000.0))
+        train_sets_weight_list.append(dataset_weights.get(id, 1_00.0))
         ds_with_sizes.append((Id.WIDER, len(train)))
 
     train_sets_weight_list = np.asarray(train_sets_weight_list)
@@ -560,12 +560,12 @@ def make_pose_estimation_loaders(
         worker_init_fn=seed_worker,
         pin_memory=True,
     )
-    test_loader = dtr.PostprocessingLoader[Batch](
+    test_loader = dtr.SegmentedCollationDataLoader(
         ds_test,
         batch_size=batchsize * 2,
         num_workers=utils.num_workers(),
-        postprocess=transforms.Compose(loader_trafo_test),
-        collate_fn=Batch.collate,
+        postprocess=loader_trafo_test,
+        segmentation_key_getter=lambda b: b.meta.tag,
         pin_memory=True,
         worker_init_fn=seed_worker,
     )
@@ -618,6 +618,8 @@ def make_validation_dataset(
         ds = make_replicant_face_stability_test(transform=test_trafo)
     elif name == "replicantface":
         _, ds = make_replicant_face_datasets(transform=test_trafo)
+    elif name == "wider":
+        _, ds = make_widerface_datasets(transform=test_trafo)
     else:
         assert False, f"Unknown dataset {name}"
 

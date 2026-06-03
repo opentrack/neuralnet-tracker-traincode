@@ -66,7 +66,7 @@ def load_pose_network(filename, device) -> InferenceNetwork:
                         "CPUExecutionProvider",
                     ],
                     # This may look odd but ONNX can decide to run certain ops on the CPU!
-                    "cuda": ["CUDAExecutionProvider", "CPUExecutionProvider"],
+                    "cuda": [("CUDAExecutionProvider", {"use_tf32": 0}), "CPUExecutionProvider"],
                 }[device]
                 self.session = onnxruntime.InferenceSession(modelfile, providers=providers)
 
@@ -314,6 +314,49 @@ class _SimpleConcatenatingErrorMetric(Metric):
 
     def compute(self) -> Tensor:
         return torch.cat(self.error)
+
+
+class AccuracyResults(NamedTuple):
+    thresholds: torch.Tensor
+    # f1_scores: torch.Tensor
+    # precisions: torch.Tensor
+    # recalls: torch.Tensor
+    accuracies: torch.Tensor
+
+
+class IsFaceAccuracy(Metric):
+    is_differentiable = False
+    higher_is_better = True
+    full_state_update = False
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.thresholds = torch.as_tensor([0.1, 0.33, 0.5, 0.66, 0.9])
+        n = self.thresholds.size(0)
+        self.is_tp: Tensor
+        self.is_fp: Tensor
+        self.is_tn: Tensor
+        self.is_fn: Tensor
+        self.add_state("is_tp", default=torch.zeros((n,)), dist_reduce_fx="sum")
+        self.add_state("is_fp", default=torch.zeros((n,)), dist_reduce_fx="sum")
+        self.add_state("is_tn", default=torch.zeros((n,)), dist_reduce_fx="sum")
+        self.add_state("is_fn", default=torch.zeros((n,)), dist_reduce_fx="sum")
+
+    def update(self, preds: Batch, targets: Batch) -> None:
+        has_face = (targets["hasface"] > 0.5)[:, None]
+        assert has_face.ndim == 2, f"It has shape {has_face.shape}"
+        pred_face = preds["hasface"] > self.thresholds[None, :]
+        self.is_tp += (has_face & pred_face).sum(dim=0)
+        self.is_fp += (~has_face & pred_face).sum(dim=0)
+        self.is_tn += (~has_face & ~pred_face).sum(dim=0)
+        self.is_fn += (has_face & ~pred_face).sum(dim=0)
+
+    def compute(self) -> AccuracyResults:
+        # precision = self.is_tp / (self.is_tp + self.is_fp)
+        # recall = self.is_tp / (self.is_tp + self.is_fn)
+        # f1_score = 2 * precision * recall / (precision + recall)
+        accuracy = (self.is_tp + self.is_tn) / (self.is_tp + self.is_fp + self.is_tn + self.is_fn)
+        return AccuracyResults(self.thresholds, accuracy)
 
 
 class LabelExtractor(_SimpleConcatenatingErrorMetric):

@@ -214,6 +214,29 @@ class BlurPool2D(nn.Module):
             bias=None,
         )
 
+    def __repr__(self):
+        return f"BlurPool2D(kernel_size={self.kernel_size}, stride={self.stride}, channels={self.channels})"
+
+
+class UpChannelsSlicingDeterministic(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int):
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.replications = out_channels // in_channels
+        self.remainder = out_channels % in_channels
+        assert self.remainder == 0, "Not implemented"
+        eye = torch.eye(in_channels)
+        eye = eye.tile((self.replications, 1))
+        self.register_buffer("eye", eye[:, :, None, None])
+
+    def forward(self, x):
+        # out = torch.tile(x, (1,self.replications, 1, 1))
+        # Somehow conv2d is a lot faster than tile or gather ...
+        # Very noticeable in the mobilenet model.
+        out = torch.conv2d(x, self.eye)
+        return out
+
 
 def freeze_norm_stats(m):
     if isinstance(
