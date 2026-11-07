@@ -43,12 +43,12 @@ class LocalizerNet(nn.Module):
 
         self.initial_stage = nn.Sequential(
             nn.Conv2d(1, 8, 3, padding=1, stride=2, bias=False),
-            nn.BatchNorm2d(8),
+            nn.BatchNorm2d(8, momentum=0.01),
             nn.ReLU(),
         )
 
         def depthwise_separable_convolution(in_, out, kernel, **kwargs):
-            momentum = kwargs.pop("momentum", 0.001)
+            momentum = kwargs.pop("momentum", 0.01)
             return nn.Sequential(
                 nn.Conv2d(in_, in_, kernel, groups=in_, bias=False, **kwargs),
                 nn.BatchNorm2d(in_, momentum=momentum),
@@ -57,23 +57,118 @@ class LocalizerNet(nn.Module):
                 nn.BatchNorm2d(out, momentum=momentum),
             )
 
+        momentum = 0.01
         self.convnet = nn.Sequential(
             self.initial_stage,
             depthwise_separable_convolution(8, 8, 3, padding=1),
-            IR(in_ch=8, out_ch=12, kernel_size=3, stride=2, expansion_factor=2),
-            IR(in_ch=12, out_ch=12, kernel_size=3, stride=1, expansion_factor=2),
-            IR(in_ch=12, out_ch=20, kernel_size=3, stride=2, expansion_factor=4),
-            IR(in_ch=20, out_ch=20, kernel_size=3, stride=1, expansion_factor=4),
-            IR(in_ch=20, out_ch=20, kernel_size=3, stride=1, expansion_factor=4),
-            IR(in_ch=20, out_ch=32, kernel_size=5, stride=2, expansion_factor=2),
-            IR(in_ch=32, out_ch=32, kernel_size=5, stride=1, expansion_factor=2),
-            IR(in_ch=32, out_ch=32, kernel_size=3, stride=1, expansion_factor=2),
-            IR(in_ch=32, out_ch=32, kernel_size=3, stride=1, expansion_factor=2),
-            IR(in_ch=32, out_ch=56, kernel_size=3, stride=2, expansion_factor=2),
-            IR(in_ch=56, out_ch=56, kernel_size=3, stride=1, expansion_factor=2),
-            IR(in_ch=56, out_ch=56, kernel_size=3, stride=1, expansion_factor=2),
+            IR(
+                in_ch=8,
+                out_ch=12,
+                kernel_size=3,
+                stride=2,
+                expansion_factor=2,
+                bn_momentum=momentum,
+            ),
+            IR(
+                in_ch=12,
+                out_ch=12,
+                kernel_size=3,
+                stride=1,
+                expansion_factor=2,
+                bn_momentum=momentum,
+            ),
+            IR(
+                in_ch=12,
+                out_ch=20,
+                kernel_size=3,
+                stride=2,
+                expansion_factor=4,
+                bn_momentum=momentum,
+            ),
+            IR(
+                in_ch=20,
+                out_ch=20,
+                kernel_size=3,
+                stride=1,
+                expansion_factor=4,
+                bn_momentum=momentum,
+            ),
+            IR(
+                in_ch=20,
+                out_ch=20,
+                kernel_size=3,
+                stride=1,
+                expansion_factor=4,
+                bn_momentum=momentum,
+            ),
+            IR(
+                in_ch=20,
+                out_ch=32,
+                kernel_size=5,
+                stride=2,
+                expansion_factor=2,
+                bn_momentum=momentum,
+            ),
+            IR(
+                in_ch=32,
+                out_ch=32,
+                kernel_size=5,
+                stride=1,
+                expansion_factor=2,
+                bn_momentum=momentum,
+            ),
+            IR(
+                in_ch=32,
+                out_ch=32,
+                kernel_size=3,
+                stride=1,
+                expansion_factor=2,
+                bn_momentum=momentum,
+            ),
+            IR(
+                in_ch=32,
+                out_ch=32,
+                kernel_size=3,
+                stride=1,
+                expansion_factor=2,
+                bn_momentum=momentum,
+            ),
+            IR(
+                in_ch=32,
+                out_ch=56,
+                kernel_size=3,
+                stride=2,
+                expansion_factor=2,
+                bn_momentum=momentum,
+            ),
+            IR(
+                in_ch=56,
+                out_ch=56,
+                kernel_size=3,
+                stride=1,
+                expansion_factor=2,
+                bn_momentum=momentum,
+            ),
+            IR(
+                in_ch=56,
+                out_ch=56,
+                kernel_size=3,
+                stride=1,
+                expansion_factor=2,
+                bn_momentum=momentum,
+            ),
             nn.Conv2d(56, 2, 1, bias=True),
         )
+
+        for m in self.convnet.modules():
+            if not isinstance(m, IR):
+                continue
+            if not m.apply_residual:
+                continue
+            bn = m.layers[-1]
+            assert isinstance(bn, nn.BatchNorm2d)
+            nn.init.zeros_(bn.bias)
+            nn.init.zeros_(bn.weight)
 
         self.boxstddev = CenterOfMassAndStd(half_size=1.5)
 
@@ -91,13 +186,15 @@ class LocalizerNet(nn.Module):
         pred[:, 1:3] = mean - std
         pred[:, 3:5] = mean + std
         return pred
-        # FIXME: return dict
 
     def inference(self, x):
         assert not self.training
         pred = self.forward(x)
-        pred = {"hasface": torch.sigmoid(pred[:, 0]), "roi": pred[:, 1:]}
+        pred = {"hasface": torch.sigmoid(pred[:, :1]), "roi": pred[:, 1:]}
         return pred
+
+    def get_config(self):
+        return {}
 
 
 class Landmarks3dOutput(nn.Module):
@@ -479,7 +576,9 @@ def load_model(filename: str):
         net.load_state_dict(sd, strict=True)
 
     try:
-        return trackertraincode.neuralnets.io.load_model(filename, [NetworkWithPointHead])
+        return trackertraincode.neuralnets.io.load_model(
+            filename, [NetworkWithPointHead, LocalizerNet]
+        )
     except trackertraincode.neuralnets.io.InvalidFileFormatError as e:
         print(f"Failed to load model because: {str(e)}. Will attempt to load legacy config")
         return load_legacy(filename)

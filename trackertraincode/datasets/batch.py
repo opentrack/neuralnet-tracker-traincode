@@ -95,6 +95,9 @@ class Batch:
     def pop(self, k):
         return self._data.pop(k)
 
+    def __copy__(self):
+        return Batch(self.meta, copy.copy(self._data))
+
     def __str__(self):
         seq_str = f",N={self.meta.seq[-1][-1]}" if self.meta.seq is not None else ""
         return f"Batch({self.meta.tag},B={self.meta.batchsize}{seq_str})"

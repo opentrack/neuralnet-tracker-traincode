@@ -365,7 +365,7 @@ class LitModel(pl.LightningModule):
             values = self._test_criterions[batch.meta.tag].evaluate(pred, batch, batch_idx)
             val_loss = torch.cat([(lv.val * lv.weight) for lv in values]).sum()
             self.log("val_loss", val_loss, on_epoch=True, batch_size=batch.meta.batchsize)
-            return values
+            return values  # TODO: WTF???
 
     def configure_optimizers(self):
         optimizer, scheduler = create_optimizer(self._model, self._args)

@@ -13,32 +13,10 @@ import trackertraincode.neuralnets.torch6drotation as torch6drotation
 from trackertraincode.neuralnets.modelcomponents import GaussianMixture
 from trackertraincode.neuralnets.rotrepr import RotationRepr, QuatRepr, Mat33Repr
 
-import robust_loss_pytorch.adaptive
-
-
-class AdaptiveLoss(robust_loss_pytorch.adaptive.AdaptiveLossFunction):
-    def __init__(self):
-        super().__init__(
-            num_dims=1,
-            float_dtype=np.float32,
-            device=0,
-            alpha_lo=0.0,
-            alpha_hi=0.0,
-            scale_lo=0.1,
-            scale_init=0.1,
-        )
-
-    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        d = (x - y).view(-1, 1)
-        l = self.lossfun(d)
-        return l.view(x.shape)
-
-
 SimpleLossSwitch = Literal["l2", "smooth_l1", "l1", "adaptive"]
 LOSS_OBJECT_MAP: Mapping[SimpleLossSwitch, Any] = {
     "l2": torch.nn.MSELoss(reduction="none"),
     "l1": torch.nn.L1Loss(reduction="none"),
-    "adaptive": AdaptiveLoss(),
     "smooth_l1": torch.nn.SmoothL1Loss(reduction="none", beta=0.01),
 }
 
@@ -54,29 +32,10 @@ def smooth_geodesic_distance(pred, target):
     )
 
 
-class AdaptiveGeodesicDistance(robust_loss_pytorch.adaptive.AdaptiveLossFunction):
-    def __init__(self):
-        super().__init__(
-            num_dims=1,
-            float_dtype=np.float32,
-            device=0,
-            alpha_lo=0.0,
-            alpha_hi=0.0,
-            scale_lo=0.1,
-            scale_init=0.1,
-        )
-
-    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        gd = torchquaternion.geodesicdistance(x, y)
-        l = self.lossfun(gd.view(-1, 1))
-        return l.view(*gd.shape)
-
-
 SimpleRotLossSwitch = Literal["approx_distance", "smooth_geodesic", "adaptive_geodesic", "geodesic"]
 LOSS_FUNC_MAP_FOR_ROTATION = {
     "approx_distance": torchquaternion.distance,
     "smooth_geodesic": smooth_geodesic_distance,
-    "adaptive_geodesic": AdaptiveGeodesicDistance(),
     "geodesic": torchquaternion.geodesicdistance,
 }
 
@@ -238,9 +197,9 @@ class HasFaceLoss(object):
 class LocalizerProbLoss(object):
     # Pytorch Manual:
     #   "This loss combines a Sigmoid layer and the BCELoss in one single class"
-    bce = nn.BCEWithLogitsLoss(reduction="mean")
+    bce = nn.BCEWithLogitsLoss(reduction="none")
 
-    def __call__(self, net, pred, sample):
+    def __call__(self, pred, sample):
         target = sample["hasface"]
         pred = pred[:, 0]  # Grab the logit value for the "is face" score
         return self.bce(pred, target)
@@ -248,12 +207,10 @@ class LocalizerProbLoss(object):
 
 class LocalizerBoxLoss(object):
     # Regression loss for bounding box prediction
-    def __call__(self, net, pred, sample):
+    def __call__(self, pred, sample):
         # Only train this if the image shows a face
         target = sample["roi"]
         enable = sample["hasface"]
-        # FIXME: I adapted this for the pose estimator output
-        # Old code: `pred = pred[:,1:]`
-        roipred = pred["roi"]
+        roipred = pred[:, 1:]
         err = F.smooth_l1_loss(roipred, target, reduction="none", beta=0.1)
-        return torch.mean(enable[:, None] * err)
+        return torch.mean(enable[:, None] * err, dim=-1)

@@ -115,16 +115,6 @@ class ResNetBackbone(nn.Module):
                 if isinstance(m, self.block) and m.bn2.weight is not None:
                     nn.init.constant_(m.bn2.weight, 0)  # type: ignore[arg-type]
 
-        def grab_output(dest: dict, name: str, model, input, output):
-            dest[name] = output
-
-        self.dest = {}
-
-        self.layer1.register_forward_hook(partial(grab_output, self.dest, "z33"))
-        self.layer2.register_forward_hook(partial(grab_output, self.dest, "z17"))
-        self.layer3.register_forward_hook(partial(grab_output, self.dest, "z9"))
-        self.layer4.register_forward_hook(partial(grab_output, self.dest, "z5"))
-
         self.num_intermediate_features = [x * self.block.expansion for x in [64, 126, 256, 512]]
 
     def _make_layer(
@@ -178,18 +168,16 @@ class ResNetBackbone(nn.Module):
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, list[torch.Tensor]]:
         x = self.stem(x)
 
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
+        x33 = self.layer1(x)
+        x17 = self.layer2(x33)
+        x9 = self.layer3(x17)
+        x5 = self.layer4(x9)
 
-        x = self.avgpool(x)
+        x = self.avgpool(x5)
         x = torch.flatten(x, 1)
 
-        z = [self.dest[k] for k in "z33 z17 z9 z5".split(" ")]
+        z = [x33, x17, x9, x5]
         assert z[-1].shape[2] == 5
-        self.dest.clear()
-
         return x, z
 
 

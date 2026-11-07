@@ -1,7 +1,19 @@
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Iterable, Optional, Tuple, Dict, Any, Union, List, NamedTuple, Mapping, Literal
+from typing import (
+    Iterable,
+    Optional,
+    Tuple,
+    Dict,
+    Any,
+    Union,
+    List,
+    NamedTuple,
+    Mapping,
+    Literal,
+    cast,
+)
 from copy import copy
 from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation
@@ -9,6 +21,7 @@ import math
 from abc import ABCMeta, abstractmethod
 from collections import defaultdict
 import tqdm
+import onnxruntime
 
 from torchmetrics import Metric
 import torch
@@ -20,6 +33,7 @@ from trackertraincode.neuralnets.affine2d import Affine2d
 import trackertraincode.utils as utils
 import trackertraincode.datatransformation as dtr
 import trackertraincode.neuralnets.torchquaternion as torchquaternion
+import trackertraincode.neuralnets.models
 
 
 class InferenceNetwork(metaclass=ABCMeta):
@@ -33,8 +47,13 @@ class InferenceNetwork(metaclass=ABCMeta):
         pass
 
     @property
+    def input_shape(self) -> tuple[int, int]:
+        w = self.input_width
+        return (w, w)
+
+    @property
     @abstractmethod
-    def input_resolution(self) -> int:
+    def input_width(self) -> int:
         pass
 
 
@@ -51,10 +70,84 @@ def _onnx_batch_inference(session, batch):
     return session.run(None, {"x": batch.numpy()})
 
 
+def load_localizer_network(filename: str, device: str) -> InferenceNetwork:
+    if filename.endswith(".onnx"):
+
+        class OnnxLocalizerNetwork(InferenceNetwork):
+            def __init__(self):
+                providers = {
+                    "cpu": [
+                        "CPUExecutionProvider",
+                    ],
+                    # This may look odd but ONNX can decide to run certain ops on the CPU!
+                    "cuda": [("CUDAExecutionProvider", {"use_tf32": 0}), "CPUExecutionProvider"],
+                }[device]
+                self._session = onnxruntime.InferenceSession(filename, providers=providers)
+                inputs = self._session.get_inputs()
+                assert len(inputs) == 1
+                assert len(inputs[0].shape) == 4
+                self._input_shape = tuple(inputs[0].shape[2:])
+                batch_size = inputs[0].shape[0]
+                if isinstance(batch_size, int):
+                    # Fixed batch size. Should be fixed at one image.
+                    self._inference = _onnx_single_frame_inference
+                else:
+                    self._inference = _onnx_batch_inference
+                self.output_names = [cast(str, o.name) for o in self._session.get_outputs()]
+
+            @property
+            def device_for_input(self):
+                """In spite of potentially executing on the gpu, ONNX does not know what a pytorch Tensor on the GPU is."""
+                return "cpu"
+
+            @property
+            def input_width(self) -> int:
+                return self.input_shape[0]
+
+            @property
+            def input_shape(self) -> tuple[int, int]:
+                """Returns the width."""
+                return self._input_shape
+
+            def __call__(self, batch):
+                (logit_box,) = self._inference(self._session, batch)
+                logit_box = torch.from_numpy(logit_box)
+                pred = {"hasface": torch.sigmoid(logit_box[:, :1]), "roi": logit_box[:, 1:]}
+                return pred
+
+        return OnnxLocalizerNetwork()
+    else:
+
+        class PytorchLocalizerNetwork(InferenceNetwork):
+            def __init__(self):
+                net = trackertraincode.neuralnets.models.load_model(filename)
+                net.eval()
+                net.to(device)
+                self._net = net
+                self._device = device
+
+            @property
+            def device_for_input(self):
+                return self._device
+
+            @property
+            def input_width(self) -> int:
+                return self.input_shape[0]
+
+            @property
+            def input_shape(self) -> tuple[int, int]:
+                """Returns the width."""
+                return self._net.input_resolution
+
+            @torch.no_grad
+            def __call__(self, images):
+                return self._net.inference(images)
+
+        return PytorchLocalizerNetwork()
+
+
 def load_pose_network(filename, device) -> InferenceNetwork:
     if filename.endswith(".onnx"):
-        import onnxruntime
-
         # For showing device placement
         # onnxruntime.set_default_logger_severity(1)
         # onnxruntime.set_default_logger_verbosity(0)
@@ -71,6 +164,7 @@ def load_pose_network(filename, device) -> InferenceNetwork:
                 self.session = onnxruntime.InferenceSession(modelfile, providers=providers)
 
                 # TODO: decide on a names. Also for the OpenTrack plugin.
+                # Maps from OpenTrack names to here.
                 namemap = {
                     "pos_size": "coord",
                     "quat": "pose",
@@ -84,8 +178,8 @@ def load_pose_network(filename, device) -> InferenceNetwork:
                     "box_scales": "roi_scales",
                     "box_std": "roi_scales",
                 }
-                self.output_names = [
-                    namemap.get(o.name, o.name) for o in self.session.get_outputs()
+                self.output_names: list[str] = [
+                    namemap.get(o.name, cast(str, o.name)) for o in self.session.get_outputs()
                 ]
 
                 # print ("Model version string: ", self.session.get_modelmeta().version, ' has outputs', self.output_names)
@@ -94,6 +188,7 @@ def load_pose_network(filename, device) -> InferenceNetwork:
                 )
 
                 if isinstance(self.session.get_inputs()[0].shape[0], int):
+                    # Fixed batch size. Should be fixed at one image.
                     self._inference = _onnx_single_frame_inference
                 else:
                     self._inference = _onnx_batch_inference
@@ -104,7 +199,7 @@ def load_pose_network(filename, device) -> InferenceNetwork:
                 return "cpu"
 
             @property
-            def input_resolution(self) -> int:
+            def input_width(self) -> int:
                 return self._input_resolution
 
             def __call__(self, batch):
@@ -123,7 +218,6 @@ def load_pose_network(filename, device) -> InferenceNetwork:
 
         return OnnxPoseNetwork(filename, device)
     else:
-        import trackertraincode.neuralnets.models
 
         class PytorchPoseNetwork(InferenceNetwork):
             def __init__(self, modelfile, device):
@@ -138,7 +232,7 @@ def load_pose_network(filename, device) -> InferenceNetwork:
                 return self._device
 
             @property
-            def input_resolution(self) -> int:
+            def input_width(self) -> int:
                 return self._net.input_resolution
 
             def __call__(self, images):
@@ -173,7 +267,7 @@ class Predictor:
         else:
             self._net = load_pose_network(net, device)
         self._roi_focus = dtr.batch.FocusRoi(
-            self._net.input_resolution, focus_roi_expansion_factor, insert_backtransform=True
+            self._net.input_width, focus_roi_expansion_factor, insert_backtransform=True
         )
 
     def _create_sample(self, image: Tensor, roi: Tensor):
@@ -269,32 +363,6 @@ class Predictor:
 # https://github.com/thohemp/6DRepNet/blob/master/sixdrepnet/test.py#L137
 # I checked that their utils.compute_euler_angles_from_rotation_matrices is the inverse
 # of their utils.get_R.
-
-
-class LocalizerBoxMeanSquareErrors(object):
-    def __init__(self, threshold):
-        self.threshold = threshold
-
-    def __call__(self, pred, sample):
-        target = sample["roi"]
-        mask = sample["hasface"] > self.threshold
-        mask &= pred["hasface"] > self.threshold
-        err = F.mse_loss(pred["roi"], target[:, :], reduction="none")
-        err[~mask, :] = np.nan
-        err0 = torch.sum(err[:, :2], dim=1)
-        err1 = torch.sum(err[:, 2:], dim=1)
-        return torch.cat([err0[:, None], err1[:, None]], dim=1)
-
-
-class LocalizerIsFaceMatches(object):
-    def __init__(self, threshold):
-        self.threshold = threshold
-
-    def __call__(self, pred, sample):
-        target = sample["hasface"]
-        score = pred["hasface"]
-        match = torch.eq(target > self.threshold, score > self.threshold)
-        return match
 
 
 class _SimpleConcatenatingErrorMetric(Metric):
@@ -413,6 +481,21 @@ class NormalizedXYSError(_SimpleConcatenatingErrorMetric):
         coord = preds["coord"]
         x0, y0, x1, y1 = targets["roi"].unbind(-1)
         return torch.abs(coord - coord_target) / (x1 - x0)[:, None]
+
+
+class LocalizerBoxMeanSquareErrors(_SimpleConcatenatingErrorMetric):
+    def __init__(self, threshold, **kwargs):
+        super().__init__(**kwargs)
+        self.threshold = threshold
+
+    def compute_on_batch(self, pred: Batch, sample: Batch):
+        mask = sample["hasface"] > self.threshold
+        mask &= pred["hasface"][:, 0] > self.threshold
+        err = F.mse_loss(pred["roi"], sample["roi"], reduction="none")
+        diag = (sample["roi"][:, 2:] - sample["roi"][:, :2]).square().sum(dim=-1, keepdim=True)
+        err = err / diag
+        err[~mask, :] = np.nan
+        return err.mean(dim=-1)
 
 
 # Adapted from https://github.com/MCG-NJU/SADRNet/blob/main/src/model/loss.py#L224

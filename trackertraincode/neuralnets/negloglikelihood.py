@@ -8,8 +8,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-import robust_loss_pytorch.distribution
-
 from trackertraincode.neuralnets.math import sqrclip0, inv_sqrclip0, smoothclip0, inv_smoothclip0
 import trackertraincode.facemodel.keypoints68 as kpts68
 import trackertraincode.neuralnets.torchquaternion as Q
@@ -71,20 +69,8 @@ class DiagonalScaleParameter(nn.Module):
         )
 
 
-class AdaptiveDistribution:
-    def __init__(self, center, scale):
-        self._dist = robust_loss_pytorch.distribution.Distribution()
-        self._center, self._scale = torch.broadcast_tensors(center, scale)
-
-    def log_prob(self, target: torch.Tensor) -> torch.Tensor:
-        nll = self._dist.nllfun(
-            target - self._center, alpha=torch.full_like(self._center, 0.0), scale=self._scale
-        )
-        return -nll
-
-
 SimpleDistributionSwitch = Literal["gaussian", "laplace", "adaptive"]
-DISTRIBUTION_CLASS_MAP = {"gaussian": Normal, "laplace": Laplace, "adaptive": AdaptiveDistribution}
+DISTRIBUTION_CLASS_MAP = {"gaussian": Normal, "laplace": Laplace}
 
 
 def _fill_triangular_matrix(dim: int, z: Tensor):

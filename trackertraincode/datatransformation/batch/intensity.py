@@ -35,23 +35,33 @@ class KorniaImageDistortions(object):
         self.augs = AugmentationSequential(*args, **kwargs)
 
     def __call__(self, batches: list[Batch]):
-        first = next(iter(batches))
-        image_fields = {k: [] for k in first.keys() if first.get_category(k) == FieldCategory.image}
-        sections = [batch.meta.batchsize for batch in batches]
-        # Collate images into single tensors.
-        for batch in batches:
-            for k, v in image_fields.items():
-                v.append(batch[k])
-        # Then augment the collated images. This is much faster than running the augmentations multiple times.
-        collated_augmented_images = {
-            k: torch.split(self.augs(torch.cat(v)), sections) for k, v in image_fields.items()
-        }
-        # Split the image again and assign to copies of the original batches.
-        batches = [copy(b) for b in batches]
-        for k, v in collated_augmented_images.items():
-            for batch, image in zip(batches, v):
-                batch[k] = image
-        return batches
+        if isinstance(batches, list):
+            first = next(iter(batches))
+            image_fields = {
+                k: [] for k in first.keys() if first.get_category(k) == FieldCategory.image
+            }
+            sections = [batch.meta.batchsize for batch in batches]
+            # Collate images into single tensors.
+            for batch in batches:
+                for k, v in image_fields.items():
+                    v.append(batch[k])
+            # Then augment the collated images. This is much faster than running the augmentations multiple times.
+            collated_augmented_images = {
+                k: torch.split(self.augs(torch.cat(v)), sections) for k, v in image_fields.items()
+            }
+            # Split the image again and assign to copies of the original batches.
+            batches = [copy(b) for b in batches]
+            for k, v in collated_augmented_images.items():
+                for batch, image in zip(batches, v):
+                    batch[k] = image
+            return batches
+        else:
+            batches = copy(batches)
+            for k, v in batches.items():
+                if batches.get_category(k) != FieldCategory.image:
+                    continue
+                batches[k] = self.augs(v)
+            return batches
 
 
 class RandomGaussianNoiseWithClipping(RandomGaussianNoise):

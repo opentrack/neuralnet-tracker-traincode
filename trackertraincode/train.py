@@ -144,7 +144,7 @@ class TrainHistoryPlotter(object):
             except queue.Empty:
                 return histories, True, have_new_items
             else:
-                if result is None:
+                if result is None:  # Stop signal
                     return histories, False, have_new_items
                 else:
                     have_new_items = True
@@ -195,7 +195,8 @@ class TrainHistoryPlotter(object):
         histories = None
         fig, axes, num_rows = pyplot.figure(figsize=(10, 10)), None, 0
         fig.show()
-        while pyplot.get_fignums():
+        keep_going = True
+        while pyplot.get_fignums() and keep_going:
             histories, keep_going, have_new_items = TrainHistoryPlotter.process_items(
                 queue_, histories
             )

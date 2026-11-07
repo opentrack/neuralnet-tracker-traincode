@@ -12,6 +12,7 @@ import random
 from functools import partial
 import cv2
 from copy import copy
+import threadpoolctl
 
 from torch.utils.data import Subset, ConcatDataset
 from torchvision import transforms
@@ -60,13 +61,7 @@ def seed_worker(worker_id):
     worker_seed = torch.utils.data.get_worker_info().seed % (2**32)
     np.random.seed(worker_seed)
     random.seed(worker_seed)
-    torch.set_num_threads(1)
-    torch.set_num_interop_threads(1)
-    cv2.setNumThreads(1)
-    # Also set numpy number of threads
-    import mkl
-
-    mkl.set_num_threads(1)
+    threadpoolctl.threadpool_limits(limits=1)
 
 
 def make_biwi_datasest(transform=None):
@@ -132,8 +127,8 @@ def make_widerface_datasets(transform=None):
     ds_widerface = Hdf5PoseDataset(
         widerfacefilename, transform=transform, dataclass=Tag.FACE_DETECTION
     )
-    ds_widerface_train = Subset(ds_widerface, np.arange(1000, len(ds_widerface)))
-    ds_widerface_test = Subset(ds_widerface, np.arange(1000))
+    ds_widerface_train = Subset(ds_widerface, np.arange(1024, len(ds_widerface)))
+    ds_widerface_test = Subset(ds_widerface, np.arange(1024))
     return ds_widerface_train, ds_widerface_test
 
 
@@ -532,9 +527,7 @@ def make_pose_estimation_loaders(
                 dtr.batch.RandomGamma((0.5, 2.0), p=0.2),
                 dtr.batch.RandomContrast((0.7, 1.5), p=0.2),
                 dtr.batch.RandomBrightness((0.7, 1.5), p=0.2),
-                dtr.batch.RandomGaussianBlur(
-                    p=0.1, kernel_size=(5, 5), sigma=(1.5, 1.5), silence_instantiation_warning=True
-                ),
+                dtr.batch.RandomGaussianBlur(p=0.1, kernel_size=(5, 5), sigma=(1.5, 1.5)),
                 random_apply=4,
             ),
             dtr.batch.KorniaImageDistortions(

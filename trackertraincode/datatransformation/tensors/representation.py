@@ -12,7 +12,7 @@ from trackertraincode.datasets.dshdf5pose import FieldCategory
 
 
 def ensure_image_nchw(img: torch.Tensor):
-    assert not ((img.shape[-1] in (1, 3)) and (img.shape[-3] in (1, 3)))
+    assert not ((img.shape[-1] in (1, 3)) and (img.shape[-3] in (1, 3))), f"Got shape {img.shape}"
     if img.shape[-3] in (1, 3):
         return img
     else:
@@ -20,7 +20,7 @@ def ensure_image_nchw(img: torch.Tensor):
 
 
 def ensure_image_nhwc(img: torch.Tensor):
-    assert not ((img.shape[-1] in (1, 3)) and (img.shape[-3] in (1, 3)))
+    assert not ((img.shape[-1] in (1, 3)) and (img.shape[-3] in (1, 3))), f"Got shape {img.shape}"
     if img.shape[-1] in (1, 3):
         return img
     else:

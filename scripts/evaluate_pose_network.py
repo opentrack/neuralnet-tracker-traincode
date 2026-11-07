@@ -290,9 +290,7 @@ def compute_pred_keys(loader: dtr.SampleBySampleLoader, net: eval.InferenceNetwo
     # Check if model and data support landmark prediction
     keys = ["coord", "pose", "roi"]
     sample = next(iter(loader))
-    preds = net(
-        torch.zeros((1, 1, net.input_resolution, net.input_resolution), device=net.device_for_input)
-    )
+    preds = net(torch.zeros((1, 1, *net.input_shape), device=net.device_for_input))
     if "pt3d_68" in sample and "pt3d_68" in preds:
         keys.append("pt3d_68")
     return keys

@@ -2,7 +2,7 @@ import numpy as np
 import cv2
 import functools
 import enum
-import imghdr
+import filetype
 import io
 from PIL import Image
 from numpy.typing import NDArray
@@ -18,9 +18,9 @@ class ImageFormat(enum.IntEnum):
 
 def which_image_format(buffer: np.ndarray) -> ImageFormat:
     f = io.BytesIO(buffer.tobytes())
-    kind = imghdr.what(f)
+    kind = filetype.guess(f)
     assert kind is not None
-    return {"jpeg": ImageFormat.JPG, "png": ImageFormat.PNG}[kind]
+    return {"image/jpeg": ImageFormat.JPG, "image/png": ImageFormat.PNG}[kind.mime]
 
 
 def imencode(img: NDArray[np.uint8], format=ImageFormat.JPG, quality=None) -> np.ndarray:
